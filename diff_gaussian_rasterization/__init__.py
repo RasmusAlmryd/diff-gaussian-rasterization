@@ -266,3 +266,6 @@ class SparseGaussianAdam(torch.optim.Adam):
             exp_avg_sq = stored_state["exp_avg_sq"]
             M = param.numel() // N
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
+
+
+# Add Gauss Newton 
