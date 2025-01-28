@@ -269,3 +269,6 @@ class SparseGaussianAdam(torch.optim.Adam):
 
 
 # Add Gauss Newton JADAAAA
+
+class GaussNewton(torch.optim.Optimizer):
+    pass
