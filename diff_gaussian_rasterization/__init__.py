@@ -13,6 +13,7 @@ from typing import NamedTuple
 import torch.nn as nn
 import torch
 from . import _C
+from torch.optim.optimizer import Optimizer
 
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
@@ -268,7 +269,40 @@ class SparseGaussianAdam(torch.optim.Adam):
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
 
-# Add Gauss Newton JADAAAA
+# Add Gauss Newton
+class GaussNewton(Optimizer):
+    def __init__(self, params, damping=1e-3):
+        defaults = dict(damping=damping)
+        super(GaussNewton, self).__init__(params, defaults)
 
-class GaussNewton(torch.optim.Optimizer):
-    pass
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            damping = group['damping']
+
+            for param in group['params']:
+                if param.grad is None:
+                    continue
+
+                # Compute the Gauss-Newton update
+                grad = param.grad.data
+                hessian_approx = self._compute_hessian_approx(param)
+                update = torch.linalg.solve(hessian_approx + damping * torch.eye(hessian_approx.size(0)), grad)
+
+                # Update the parameters
+                param.data -= lr * update
+
+        return loss
+
+    def _compute_hessian_approx(self, param):
+        # Placeholder for Hessian approximation computation
+        # This should be replaced with the actual computation
+        return torch.eye(param.numel())
+
+# Example usage:
+# optimizer = GaussNewton(model.parameters(), lr=0.01, damping=0.1)
