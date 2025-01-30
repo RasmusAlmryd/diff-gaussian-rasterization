@@ -271,19 +271,19 @@ class SparseGaussianAdam(torch.optim.Adam):
 
 # Add Gauss Newton
 class GaussNewton(Optimizer):
-    def __init__(self, params, damping=1e-3):
-        defaults = dict(damping=damping)
-        super(GaussNewton, self).__init__(params, defaults)
+    def __init__(self, params, step_alpha=0.7, step_gamma=1):
+        defaults = dict(step_alpha=step_alpha, step_gamma=step_gamma)
+        super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
     def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            loss = closure()
+       # loss = None
+       # if closure is not None:    #Not sure about this part
+       #     loss = closure()
 
         for group in self.param_groups:
-            lr = group['lr']
-            damping = group['damping']
+            step_gamma = self.defaults['step_gamma']
+            step_alpha = self.defaults['step_alpha']
 
             for param in group['params']:
                 if param.grad is None:
