@@ -280,7 +280,7 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, N):
+    def step(self, visibility, N, loss):
        # loss = None
        # if closure is not None:    #Not sure about this part
        #     loss = closure()
@@ -298,16 +298,38 @@ class GaussNewton(Optimizer):
             if param.grad is None:
                 continue
 
+            # Lazy state initialization from adam, try to fix this to get above 3000 iterations w/o crash
+            state = self.state[param]
+            if len(state) == 0:
+                state['step'] = torch.tensor(0.0, dtype=torch.float32)
+                state['exp_avg'] = torch.zeros_like(param, memory_format=torch.preserve_format)
+                state['exp_avg_sq'] = torch.zeros_like(param, memory_format=torch.preserve_format)
+            
             params.append(param.flatten())
             param_grads.append(param.grad.flatten())
             M += param.numel()
-
+        if len(param_grads) == 0:
+            return
         x = torch.cat(params)
-        J = torch.cat(param_grads)
-        
+        J = torch.cat(param_grads).view(M,-1)
+        A = J.T @ J
+        b = - J.T * loss 
+        delta_x = torch.linalg.solve(A, b)
+        offset = 0
+        # for p in params:
+        #     numel = p.numel()
+        #     #p.data.add_(delta_x[offset : offset + numel].view(p.shape))
+        #     print(delta_x.view(p.shape)[offset : offset + numel].size())
+        #     offset += numel
+        for param in params:
+            numel = param.numel()
+            param.data.add_(delta_x.view(-1)[offset:offset + numel].view(param.shape))
+            offset += numel
+
+            
         # J = torch.cat(params)
 
-        _C.GaussNewtonUpdate(x, J, step_gamma, step_alpha, visibility, N, M)
+        #_C.GaussNewtonUpdate(x, J, step_gamma, step_alpha, visibility, N, M)
 
             # for param in group['params']:
             #     if param.grad is None:
