@@ -189,6 +189,7 @@ class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
         super().__init__()
         self.raster_settings = raster_settings
+        # print("Initialized GaussianRasterizer")
 
     def markVisible(self, positions):
         # Mark visible points (based on frustum culling for camera) with a boolean 
@@ -266,8 +267,11 @@ class SparseGaussianAdam(torch.optim.Adam):
             exp_avg = stored_state["exp_avg"]
             exp_avg_sq = stored_state["exp_avg_sq"]
             M = param.numel() // N
+            print(f'Opt.step: param: {group["name"]}, size: {param.size()}')
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
+
+            # _C.GN([params], [params.grad], ..)
 
 # Add Gauss Newton
 class GaussNewton(Optimizer):
@@ -276,33 +280,65 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, visibility, N):
        # loss = None
        # if closure is not None:    #Not sure about this part
        #     loss = closure()
 
-        for group in self.param_groups:
-            step_gamma = self.defaults['step_gamma']
-            step_alpha = self.defaults['step_alpha']
+        step_gamma = self.defaults['step_gamma']
+        step_alpha = self.defaults['step_alpha']
 
-            for param in group['params']:
-                if param.grad is None:
-                    continue
+        params = []
+        param_grads = []
+        M = 0
+        for group in self.param_groups:
+
+            assert len(group["params"]) == 1, "more than one tensor in group"
+            param = group["params"][0]
+            if param.grad is None:
+                continue
+
+            params.append(param.flatten())
+            param_grads.append(param.grad.flatten())
+            M += param.numel()
+
+        x = torch.cat(params)
+        J = torch.cat(param_grads)
+        
+        # J = torch.cat(params)
+
+        _C.GaussNewtonUpdate(x, J, step_gamma, step_alpha, visibility, N, M)
+
+            # for param in group['params']:
+            #     if param.grad is None:
+            #         continue
+
+
+
+            # # Lazy state initialization
+            # state = self.state[param]
+            # if len(state) == 0:
+            #     state['step'] = torch.tensor(0.0, dtype=torch.float32)
+
+            
+            # stored_state = self.state.get(param, None)
 
                 # Compute the Gauss-Newton update
-                grad = param.grad.data
-                hessian_approx = self._compute_hessian_approx(param)
-                update = torch.linalg.solve(hessian_approx + damping * torch.eye(hessian_approx.size(0)), grad)
+                # grad = param.grad.data
+                # hessian_approx = self._compute_hessian_approx(param)
+                # update = torch.linalg.solve(hessian_approx + damping * torch.eye(hessian_approx.size(0)), grad)
 
-                # Update the parameters
-                param.data -= lr * update
+                # # Update the parameters
+                # param.data -= lr * update
 
-        return loss
+        # return loss
 
-    def _compute_hessian_approx(self, param):
-        # Placeholder for Hessian approximation computation
-        # This should be replaced with the actual computation
-        return torch.eye(param.numel())
 
-# Example usage:
-# optimizer = GaussNewton(model.parameters(), lr=0.01, damping=0.1)
+
+#     def _compute_hessian_approx(self, param):
+#         # Placeholder for Hessian approximation computation
+#         # This should be replaced with the actual computation
+#         return torch.eye(param.numel())
+
+# # Example usage:
+# # optimizer = GaussNewton(model.parameters(), lr=0.01, damping=0.1)
