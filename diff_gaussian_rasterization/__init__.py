@@ -314,14 +314,15 @@ class GaussNewton(Optimizer):
             return
         
         x = torch.cat(params)
+        delta=torch.zeroes_like(x)
         J = torch.cat(param_grads).view(-1, M)
         b = - J.T * loss 
-        M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
+        #M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
         
         N = x.shape[0]
         M = J.shape[0]
 
-        _C.GaussNewtonUpdate(x, J, b, M_precon, step_gamma, step_alpha, visibility, N, M)
+        _C.GaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
         return
         
 
