@@ -280,7 +280,7 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, N, loss):
+    def step(self, visibility, loss):
        # loss = None
        # if closure is not None:    #Not sure about this part
        #     loss = closure()
@@ -314,10 +314,21 @@ class GaussNewton(Optimizer):
             return
         
         x = torch.cat(params)
-        J = torch.cat(param_grads).view(M,-1)
-        # print(f'J size: {J.size()},  x size: {x.size()},  loss: {loss}')
-        A = J.T @ J
+        J = torch.cat(param_grads).view(-1, M)
         b = - J.T * loss 
+        M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
+        
+        N = x.shape[0]
+        M = J.shape[0]
+
+        _C.GaussNewtonUpdate(x, J, b, M_precon, step_gamma, step_alpha, visibility, N, M)
+        return
+        
+
+
+        print(f'J size: {J.size()},  x size: {x.size()},  loss: {loss}')
+        # A = J.T @ J
+        print(f'A size: {A.size()}, b size: {b.size()}')
         delta_x = torch.linalg.lstsq(A, b).solution
 
         offset = 0
@@ -329,5 +340,4 @@ class GaussNewton(Optimizer):
             
         # J = torch.cat(params)
 
-        #_C.GaussNewtonUpdate(x, J, step_gamma, step_alpha, visibility, N, M)
 
