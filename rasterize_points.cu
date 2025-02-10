@@ -21,6 +21,7 @@
 #include "cuda_rasterizer/config.h"
 #include "cuda_rasterizer/rasterizer.h"
 #include "cuda_rasterizer/adam.h"
+#include "cuda_rasterizer/gauss_newton.h"
 #include <fstream>
 #include <string>
 #include <functional>
@@ -286,4 +287,26 @@ void adamUpdate(
 		eps,
 		N,
 		M);
+}
+
+void gaussNewtonUpdate(
+	torch::Tensor &x,  
+	torch::Tensor &J,
+	torch::Tensor &b,
+	float gamma,
+	float alpha,
+	torch::Tensor &tiles_touched,
+	const uint32_t N, 
+	const uint32_t M  
+){
+	GaussNewton::gaussNewtonUpdate(
+		x.contiguous().data<float>(), 
+		J.contiguous().data<float>(),
+		b.contiguous().data<float>(),
+		gamma,
+		alpha,
+		tiles_touched.contiguous().data<bool>(),
+		N, 
+		M 
+	);
 }

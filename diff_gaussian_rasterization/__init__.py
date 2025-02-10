@@ -314,7 +314,7 @@ class GaussNewton(Optimizer):
             return
         
         x = torch.cat(params)
-        delta=torch.zeroes_like(x)
+        delta = torch.zeros_like(x, dtype=torch.float32)
         J = torch.cat(param_grads).view(-1, M)
         b = - J.T * loss 
         #M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
@@ -322,21 +322,35 @@ class GaussNewton(Optimizer):
         N = x.shape[0]
         M = J.shape[0]
 
-        _C.GaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
-        return
-        
+        print(f'N: {N}, M: {M}')
+        _C.gaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
+        torch.cuda.synchronize()
+        print('PCG done')
+        # raise Exception()
+        print(f'delta after CUDA update: {delta}')
+        print(f'delta device: {delta.device}, J device: {J.device}, b device: {b.device}')
 
 
-        print(f'J size: {J.size()},  x size: {x.size()},  loss: {loss}')
+        print(f'J size: {J.size()}')
+        print(f'x size: {x.size()}')
+        print(f'loss: {loss.size()}')
+
+        print(f'delta ptr: {hex(delta.data_ptr())}')
+        print(f'delta size: {delta.size()}')
         # A = J.T @ J
-        print(f'A size: {A.size()}, b size: {b.size()}')
-        delta_x = torch.linalg.lstsq(A, b).solution
+        # print(f'A size: {A.size()}, b size: {b.size()}')
+        # delta_x = torch.linalg.lstsq(A, b).solution
 
         offset = 0
         for param in params:
             numel = param.numel()
-            param.data.add_(delta_x.view(-1)[offset:offset + numel].view(param.shape))
+            param.data.add_(delta.view(-1)[offset:offset + numel].view(param.shape))
             offset += numel
+
+        # del delta
+        # del x
+        # del b
+        # del J
 
             
         # J = torch.cat(params)

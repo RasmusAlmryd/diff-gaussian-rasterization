@@ -13,7 +13,7 @@ void createJ(){
 }
 
 __global__ void diagJTJ(const float* J, float* M_precon, uint32_t N, uint32_t M){
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N*M) return;
     uint32_t x = idx % N;
     uint32_t y = idx / N;
@@ -27,9 +27,9 @@ __global__ void diagJTJ(const float* J, float* M_precon, uint32_t N, uint32_t M)
 }
 
 __global__ void next_z(float* M_precon, float* r_0, float* z, uint32_t N){
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
-    float inv = 1.0 / M[idx];
+    float inv = 1.0 / M_precon[idx];
     float z_val = inv * r_0[idx];
     z[idx] = z_val;
 }
@@ -39,8 +39,8 @@ __global__ void next_z(float* M_precon, float* r_0, float* z, uint32_t N){
 //     atomicAdd(R, r_val*r_val);
 // }
 
-__global__ void dot(int *a, int *b, int *c, uint32_t N){
-    __shared__ int temp[THREADS_PER_BLOCK];
+__global__ void dot(float *a, float *b, float *c, uint32_t N){
+    __shared__ float temp[THREADS_PER_BLOCK];
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
 
     if(idx >= N) return;
@@ -51,7 +51,7 @@ __global__ void dot(int *a, int *b, int *c, uint32_t N){
 
     if (threadIdx.x == 0)
     {
-        int sum = 0;
+        float sum = 0;
         for (int i = 0; i < N; i++)
         {
             sum += temp[i];
@@ -95,29 +95,29 @@ void gpu_copy(float* src, float* dest, const uint32_t N){
     dest[idx] = src[idx];
 }
 __global__ 
-void Scale(float* v, float* s, float* v_acc uint32_t N){                // Used for calculating Ap in PCG
+void Scale(float* v, float* s, float* v_acc, uint32_t N){                // Used for calculating Ap in PCG
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
     if(idx >= N) return;
     v_acc[idx] = *s * v[idx];
 }
 
 __global__
-void sum_residuals(float* Ap, float* residual_dot_p, float J[N][M], uint32_t N, uint32_t M){  // Sums over r(i) with scalar vector product r(i)^T * p
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+void sum_residuals(float* Ap, float* residual_dot_p, float* J, uint32_t N, uint32_t M){  // Sums over r(i) with scalar vector product r(i)^T * p
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N*M) return;
     uint32_t x = idx % N;
     uint32_t y = idx / N;
-    atomicAdd(&Ap[x], residual_dot_p[y] * J[x][y]);
+    atomicAdd(&Ap[x], residual_dot_p[y] * J[x + y * N]);
 }
 
 __global__
 void scalar_divide(float* numerator, float* denominator, float* quotient){
-    quotient = numerator / denominator;
+    *quotient = *numerator / *denominator;
 }
 
 __global__
 void next_x(float* x, float* p, float* alpha, uint32_t N){
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     x[idx] = x[idx] + *alpha * p[idx];
 }
@@ -125,14 +125,14 @@ void next_x(float* x, float* p, float* alpha, uint32_t N){
 
 __global__
 void next_p(float* z, float* p, float* beta, uint32_t N){
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     p[idx] = z[idx] + *beta * p[idx];
 }
 
 __global__
 void next_r(float* r, float* Ap, float* alpha, uint32_t N){
-    uint32_t idx = blockIdx.x * blockdim.x + threadIdx.x;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     r[idx] = r[idx] - *alpha * Ap[idx];
 } 
@@ -143,7 +143,7 @@ void PCG(float* J, float gamma, float alpha){
 
 }
 
-void AP( float* J, float* p, float* Ap, uint32_t N, uint32_t M){
+void AP(float* J, float* p, float* Ap, uint32_t N, uint32_t M){
     float* residual_dot_p;
     cudaMalloc((void **)&residual_dot_p, M * sizeof(float));
     dot<<<(N+255)/256, 256>>>(J, p, residual_dot_p, N);  // r(i)^T * p
@@ -153,17 +153,18 @@ void AP( float* J, float* p, float* Ap, uint32_t N, uint32_t M){
 
 
 
-void GaussNewton::GaussNewtonUpdate(
-    const float* x,   // Is named delta in init.py : Check argument position.
-    const float* J,
+void GaussNewton::gaussNewtonUpdate(
+    float* x,   // Is named delta in init.py : Check argument position.
+    float* J,
     float* b,
-    float* M_precon
     float gamma,
     float alpha,
     const bool* tiles_touched,
     const uint32_t N, // number of parameters
     const uint32_t M  // number of residuals
     ){
+
+    printf("Address of x is %p\n", (void *)x);
     
     float* M_precon;
     cudaMalloc((void **)&M_precon, N * sizeof(float));
@@ -174,14 +175,17 @@ void GaussNewton::GaussNewtonUpdate(
     
     // r_0 = b
     // z_0 = M^-1*r_0
-    float* r= &b;
+    float* r= b;
     float* dev_z;
     cudaMalloc((void **)&dev_z, N * sizeof(float));
     next_z<<<(N+255)/256, 256>>>(M_precon, b, dev_z, N);
 
     float eps = 0.1;
-    float* h_R, h_R_prev;
-    float* dev_R, dev_R_prev, dev_Ap;
+    float* h_R;
+    float* h_R_prev;
+    float* dev_R;
+    float* dev_R_prev;
+    float* dev_Ap;
 
     cudaMalloc((void **)&dev_R, sizeof(float));
     cudaMalloc((void **)&dev_R_prev, sizeof(float));
@@ -195,7 +199,7 @@ void GaussNewton::GaussNewtonUpdate(
 
     float* dev_p;
     cudaMalloc((void **)&dev_p, N * sizeof(float));
-    gpu_copy<<<(N+255)/256, 256>>>(z, dev_p, N);
+    gpu_copy<<<(N+255)/256, 256>>>(dev_z, dev_p, N);
 
 
     float* dev_alpha;

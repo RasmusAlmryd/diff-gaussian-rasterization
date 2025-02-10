@@ -25,6 +25,7 @@ setup(
             "cuda_rasterizer/forward.cu",
             "cuda_rasterizer/backward.cu",
             "cuda_rasterizer/adam.cu",
+            "cuda_rasterizer/gauss_newton.cu",
             "rasterize_points.cu",
             "conv.cu",
             "ext.cpp"],

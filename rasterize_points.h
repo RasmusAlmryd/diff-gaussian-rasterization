@@ -87,6 +87,17 @@ void adamUpdate(
 	const uint32_t N,
 	const uint32_t M
 );
+
+void gaussNewtonUpdate(
+	torch::Tensor &x,   
+	torch::Tensor &J,
+	torch::Tensor &b,
+	float gamma,
+	float alpha,
+	torch::Tensor &tiles_touched,
+	const uint32_t N, 
+	const uint32_t M  
+);
 	
 torch::Tensor
 fusedssim(
