@@ -82,9 +82,10 @@ RasterizeGaussiansCUDA(
   const int H = image_height;
   const int W = image_width;
 
+  
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
-
+  
   torch::Tensor out_color = torch::full({NUM_CHANNELS_3DGS, H, W}, 0.0, float_opts);
   torch::Tensor out_invdepth = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
@@ -99,6 +100,7 @@ RasterizeGaussiansCUDA(
   std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
   std::function<char*(size_t)> sampleFunc = resizeFunctional(sampleBuffer);
+  printf("Num points %d", P);
   
   int rendered = 0;
   int num_buckets = 0;

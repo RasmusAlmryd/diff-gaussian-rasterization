@@ -313,20 +313,30 @@ class GaussNewton(Optimizer):
         if len(param_grads) == 0:
             return
         
+        # torch.cuda.memory._record_memory_history(max_entries=100000)
         x = torch.cat(params)
         delta = torch.zeros_like(x, dtype=torch.float32)
         J = torch.cat(param_grads).view(-1, M)
-        b = - J.T * loss 
+        print(f'J ptr: {hex(J.data_ptr())}')
+        print(f'#1param ptr: {hex(param_grads[0].data_ptr())}')
+
+
+        b = -1.0* (J.T * loss) 
         #M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
         
         N = x.shape[0]
         M = J.shape[0]
 
         print(f'N: {N}, M: {M}')
+        print(f'delta size: {delta.size()}')
+        print(f'delta before CUDA update: {delta}')
+
+
         _C.gaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
-        torch.cuda.synchronize()
-        print('PCG done')
+
         # raise Exception()
+        # torch.cuda.synchronize()
+        # print('PCG done')
         print(f'delta after CUDA update: {delta}')
         print(f'delta device: {delta.device}, J device: {J.device}, b device: {b.device}')
 
@@ -341,17 +351,27 @@ class GaussNewton(Optimizer):
         # print(f'A size: {A.size()}, b size: {b.size()}')
         # delta_x = torch.linalg.lstsq(A, b).solution
 
-        offset = 0
-        for param in params:
-            numel = param.numel()
-            param.data.add_(delta.view(-1)[offset:offset + numel].view(param.shape))
-            offset += numel
+        # offset = 0
+        # for param in params:
+        #     numel = param.numel()
+        #     param.data.add_(delta.view(-1)[offset:offset + numel].view(param.shape))
+        #     offset += numel
 
-        # del delta
-        # del x
-        # del b
-        # del J
+        print(f'x size: {x.size()}')
+        print(f'loss: {loss.size()}')
 
+        
+
+        del delta
+        del x
+        del b
+        del J
+        torch.cuda.empty_cache()
+
+        # torch.cuda.memory._dump_snapshot(f'E:\git_repos\gaussian-splatting\submodules\diff-gaussian-rasterization\gpu_mem_profile.pickle')
+
+        # torch.cuda.memory._record_memory_history(enabled=None)
+        # raise Exception()
             
         # J = torch.cat(params)
 
