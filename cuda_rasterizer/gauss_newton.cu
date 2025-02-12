@@ -131,18 +131,10 @@ void Scale(float* v, float* s, float* v_acc, uint32_t N){                // Used
     v_acc[idx] = *s * v[idx];
 }
 
-__global__
-void sum_residuals(float* Ap, float* residual_dot_p, float* J, uint32_t N, uint32_t M){  // Sums over r(i) with scalar vector product r(i)^T * p
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= N*M) return;
-    uint32_t x = idx % N;
-    uint32_t y = idx / N;
-    atomicAdd(&Ap[x], residual_dot_p[y] * J[x + y * N]);
-}
 
 __global__
 void scalar_divide(const float* numerator, const float* denominator, float* quotient){
-
+    
     if (*denominator != 0.0f) {
         *quotient = *numerator / *denominator;
     } else {
@@ -174,19 +166,35 @@ void next_r(float* r, float* Ap, float* alpha, uint32_t N){
 } 
 void PCG(float* J, float gamma, float alpha){
     // Move PCG algo here from GaussNewton below.
-
-
-
+    
+    
+    
 }
 
-void AP(float* J, float* p, float* Ap, uint32_t N, uint32_t M){
-    float* residual_dot_p;
-    cudaMalloc(&residual_dot_p, M * sizeof(float));
-    dot<<<(N+255)/256, 256>>>(J, p, residual_dot_p, N);  // r(i)^T * p
-    sum_residuals<<<((N*M)+255)/256, 256>>>(Ap, residual_dot_p, J, N, M);    // Ap = r(i) * (r(i)^T * p)
-    cudaFree(residual_dot_p);
+__global__
+void sum_residuals(float* Ap, float* residual_dot_p, float* J, uint32_t N, uint32_t M){  // Sums over r(i) with scalar vector product r(i)^T * p
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N*M) return;
+    uint32_t x = idx % N;
+    uint32_t y = idx / N;
+    atomicAdd(&Ap[x], residual_dot_p[y] * J[x + y * N]);
 }
 
+void Av(float* J, float* v, float* Av, uint32_t N, uint32_t M){
+    float* residual_dot_v;
+    cudaMalloc(&residual_dot_v, M * sizeof(float));
+    dot<<<(N+255)/256, 256>>>(J, v, residual_dot_v, N);  // r(i)^T * p
+    sum_residuals<<<((N*M)+255)/256, 256>>>(Av, residual_dot_v, J, N, M);    // Ap = r(i) * (r(i)^T * p)
+    cudaFree(residual_dot_v);
+}
+
+
+__global__ 
+void subtract(float* a, float* b, float* c, uint32_t N){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N) return;
+    c[idx] = a[idx] - b[idx];
+}
 
 
 void GaussNewton::gaussNewtonUpdate(
@@ -202,6 +210,15 @@ void GaussNewton::gaussNewtonUpdate(
 
     // printf("Address of b is %p\n", (void *)b);
     // printf("Address of x is %p\n", (void *)x);
+    float* dev_r;
+    cudaMalloc(&dev_r, N * sizeof(float));
+    gpu_copy<<<(N+255)/256, 256>>>(b, dev_r, N);
+
+    float* dev_Ax0;
+    cudaMalloc(&dev_Ax0, N * sizeof(float));
+    Av(J, x, dev_Ax0, N, M);
+
+    subtract<<<(N+255)/256, 256>>>(dev_r, dev_Ax0, dev_r, N);
     
     float* M_precon;
     cudaMalloc(&M_precon, N * sizeof(float));
@@ -215,9 +232,6 @@ void GaussNewton::gaussNewtonUpdate(
     // r_0 = b
     // z_0 = M^-1*r_0
     // float* r= b;
-    float* dev_r;
-    cudaMalloc(&dev_r, N * sizeof(float));
-    gpu_copy<<<(N+255)/256, 256>>>(b, dev_r, N);
 
     // cudaMemcpy(h_float, &dev_r[0], sizeof(float), cudaMemcpyDeviceToHost);
     // printf("dev_r(b): %g \n", *h_float);
@@ -231,10 +245,11 @@ void GaussNewton::gaussNewtonUpdate(
     float* h_R_prev;
     float* dev_R;
     float* dev_R_prev;
-    float* dev_Ap;
     
     cudaMalloc(&dev_R, sizeof(float));
     cudaMalloc(&dev_R_prev, sizeof(float));
+
+    float* dev_Ap;
     cudaMalloc(&dev_Ap, N * sizeof(float));
     
     h_R = (float *)malloc(sizeof(float));
@@ -302,7 +317,7 @@ void GaussNewton::gaussNewtonUpdate(
         // cudaMemcpy(h_float, dev_numerator, sizeof(float), cudaMemcpyDeviceToHost);
         // printf("dev_numerator test: %g \n", *h_float);
 
-        AP(J, dev_p, dev_Ap, N, M); 
+        Av(J, dev_p, dev_Ap, N, M); 
 
         dot<<<(N+255)/256, 256>>>(dev_p, dev_Ap, dev_denominator, N); // p(k)^T * Ap(k) 
         // cudaMemcpy(h_float, dev_denominator, sizeof(float), cudaMemcpyDeviceToHost);
@@ -317,7 +332,7 @@ void GaussNewton::gaussNewtonUpdate(
 
         // break;
         next_x<<<(N+255)/256, 256>>>(x, dev_p, dev_alpha, N);
-        dot<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); // r(k+1)^T * r(k+1), this is for the denomiator in the beta calculation
+        dot<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_denominator, N); // r(k)^T * z(k), this is for the denomiator in the beta calculation
         // cudaMemcpy(h_float, &dev_r[0], sizeof(float), cudaMemcpyDeviceToHost);
         // printf("dev_r: %g \n", *h_float);
         // cudaMemcpy(h_float, &dev_Ap[0], sizeof(float), cudaMemcpyDeviceToHost);
@@ -351,7 +366,7 @@ void GaussNewton::gaussNewtonUpdate(
 
     }
 
-
+    // printf("end of GN PCG \n");
 
 
 

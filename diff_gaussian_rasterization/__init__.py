@@ -319,6 +319,7 @@ class GaussNewton(Optimizer):
         N = J.shape[1]
         M = J.shape[0]
         delta = torch.zeros(N, dtype=torch.float32, device=J.device)
+        x0 = torch.zeros(N, dtype=torch.float32, device=J.device)
 
         # print(f'N: {N}, M: {M}')
         # print(f'J size: {J.size()}, device: {J.device}')
