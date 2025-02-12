@@ -267,11 +267,12 @@ class SparseGaussianAdam(torch.optim.Adam):
             exp_avg = stored_state["exp_avg"]
             exp_avg_sq = stored_state["exp_avg_sq"]
             M = param.numel() // N
-            print(f'Opt.step: param: {group["name"]}, size: {param.size()}')
+            print(f'Opt.step: param: {group["name"]}, size: {param.grad}')
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
 
             # _C.GN([params], [params.grad], ..)
+
 
 # Add Gauss Newton
 class GaussNewton(Optimizer):
@@ -281,14 +282,12 @@ class GaussNewton(Optimizer):
 
     @torch.no_grad()
     def step(self, visibility, loss):
-       # loss = None
-       # if closure is not None:    #Not sure about this part
-       #     loss = closure()
 
         step_gamma = self.defaults['step_gamma']
         step_alpha = self.defaults['step_alpha']
 
-        params = []
+        # print(f'loss: {loss}')
+
         param_grads = []
         M = 0
         for group in self.param_groups:
@@ -304,75 +303,49 @@ class GaussNewton(Optimizer):
                 state['step'] = torch.tensor(0.0, dtype=torch.float32)
                 state['exp_avg'] = torch.zeros_like(param, memory_format=torch.preserve_format)
                 state['exp_avg_sq'] = torch.zeros_like(param, memory_format=torch.preserve_format)
+                
             
-            params.append(param.flatten())
+            # params.append(param.flatten())
+            # print(f'Opt.step: param: {group["name"]}, size: {param.grad}')
+
             param_grads.append(param.grad.flatten())
             M += param.numel()
 
-
         if len(param_grads) == 0:
             return
-        
-        # torch.cuda.memory._record_memory_history(max_entries=100000)
-        x = torch.cat(params)
-        delta = torch.zeros_like(x, dtype=torch.float32)
+
         J = torch.cat(param_grads).view(-1, M)
-        print(f'J ptr: {hex(J.data_ptr())}')
-        print(f'#1param ptr: {hex(param_grads[0].data_ptr())}')
 
-
-        b = -1.0* (J.T * loss) 
-        #M_precon = torch.zeros_like(x, memory_format=torch.preserve_format)
-        
-        N = x.shape[0]
+        N = J.shape[1]
         M = J.shape[0]
+        delta = torch.zeros(N, dtype=torch.float32, device=J.device)
 
-        print(f'N: {N}, M: {M}')
-        print(f'delta size: {delta.size()}')
-        print(f'delta before CUDA update: {delta}')
+        # print(f'N: {N}, M: {M}')
+        # print(f'J size: {J.size()}, device: {J.device}')
+        # print(f'delta size: {delta.size()}, device: {delta.device}')
 
+        b = -1.0 * (J.T * loss)
+
+        # print(f'b size: {b.size()}, device: {b.device}')
+
+
+        # print(f'#1 grad ptr: {hex(param_grads[0].data_ptr())}')
+        # print(f'J ptr: {hex(J.data_ptr())}')
+
+        # return
 
         _C.gaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
 
-        # raise Exception()
-        # torch.cuda.synchronize()
-        # print('PCG done')
-        print(f'delta after CUDA update: {delta}')
-        print(f'delta device: {delta.device}, J device: {J.device}, b device: {b.device}')
+        offset = 0
+        with torch.no_grad():
+            for group in self.param_groups:
+                assert len(group["params"]) == 1, "more than one tensor in group"
+                param = group["params"][0]
+                if param.grad is None:
+                    continue
 
-
-        print(f'J size: {J.size()}')
-        print(f'x size: {x.size()}')
-        print(f'loss: {loss.size()}')
-
-        print(f'delta ptr: {hex(delta.data_ptr())}')
-        print(f'delta size: {delta.size()}')
-        # A = J.T @ J
-        # print(f'A size: {A.size()}, b size: {b.size()}')
-        # delta_x = torch.linalg.lstsq(A, b).solution
-
-        # offset = 0
-        # for param in params:
-        #     numel = param.numel()
-        #     param.data.add_(delta.view(-1)[offset:offset + numel].view(param.shape))
-        #     offset += numel
-
-        print(f'x size: {x.size()}')
-        print(f'loss: {loss.size()}')
-
-        
-
-        del delta
-        del x
-        del b
-        del J
-        torch.cuda.empty_cache()
-
-        # torch.cuda.memory._dump_snapshot(f'E:\git_repos\gaussian-splatting\submodules\diff-gaussian-rasterization\gpu_mem_profile.pickle')
-
-        # torch.cuda.memory._record_memory_history(enabled=None)
-        # raise Exception()
-            
-        # J = torch.cat(params)
-
-
+                numel = param.numel()
+                param.add(delta.view(-1)[offset:offset + numel].view(param.shape))
+                # param.add(0.1)
+                # torch.add()
+                offset += numel

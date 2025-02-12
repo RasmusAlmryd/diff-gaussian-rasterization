@@ -30,11 +30,10 @@ __global__ void next_z(float* M_precon, float* r_0, float* z, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     float denominator = M_precon[idx];
-    if (denominator == 0){
-        denominator = 0.000000001;
-        // inv = 1.0;
-    }
     float inv = 1.0 / denominator;
+    if (denominator == 0.0f){
+        inv = 1.0;
+    }
     float z_val = inv * r_0[idx];
     z[idx] = z_val;
 }
@@ -142,8 +141,13 @@ void sum_residuals(float* Ap, float* residual_dot_p, float* J, uint32_t N, uint3
 }
 
 __global__
-void scalar_divide(float* numerator, float* denominator, float* quotient){
-    *quotient = *numerator / *denominator;
+void scalar_divide(const float* numerator, const float* denominator, float* quotient){
+
+    if (*denominator != 0.0f) {
+        *quotient = *numerator / *denominator;
+    } else {
+        *quotient = 0.0f;  // Handle division by zero gracefully
+    }
 }
 
 __global__
@@ -196,7 +200,8 @@ void GaussNewton::gaussNewtonUpdate(
     const uint32_t M  // number of residuals
     ){
 
-    printf("Address of x is %p\n", (void *)x);
+    // printf("Address of b is %p\n", (void *)b);
+    // printf("Address of x is %p\n", (void *)x);
     
     float* M_precon;
     cudaMalloc(&M_precon, N * sizeof(float));
@@ -205,6 +210,8 @@ void GaussNewton::gaussNewtonUpdate(
     
     diagJTJ<<<numBlocks, threadsPerBlock>>>(J, M_precon, N, M);
     
+    float* h_float;
+    h_float = (float *)malloc(sizeof(float));
     // r_0 = b
     // z_0 = M^-1*r_0
     // float* r= b;
@@ -212,11 +219,14 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMalloc(&dev_r, N * sizeof(float));
     gpu_copy<<<(N+255)/256, 256>>>(b, dev_r, N);
 
+    // cudaMemcpy(h_float, &dev_r[0], sizeof(float), cudaMemcpyDeviceToHost);
+    // printf("dev_r(b): %g \n", *h_float);
+
     float* dev_z;
     cudaMalloc(&dev_z, N * sizeof(float));
     next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
     
-    float eps = 0.00001;
+    float eps = 0.00000001;
     float* h_R;
     float* h_R_prev;
     float* dev_R;
@@ -254,38 +264,72 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMalloc(&dev_beta, sizeof(float));
 
     
-    float* h_float;
-    h_float = (float *)malloc(sizeof(float));
+    
     
     
     int k = 0; 
     const int MAX_ITERATIONS = 5;
     cudaMemcpy(h_R_prev, dev_R_prev, sizeof(float), cudaMemcpyDeviceToHost);
+
+
     
     while(k < MAX_ITERATIONS){
+
+        // float h_numerator = 1.0f;
+        // float h_denominator = 2.0f;
+        // cudaMemcpy(dev_numerator, &h_numerator, sizeof(float), cudaMemcpyHostToDevice);
+        // cudaMemcpy(h_float, dev_numerator, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_numerator test: %f \n", *h_float);
+
+        // cudaMemcpy(dev_denominator, &h_denominator, sizeof(float), cudaMemcpyHostToDevice);
+        // cudaMemcpy(h_float, dev_denominator, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_denominator test: %f \n", *h_float);
+
+        // scalar_divide<<<1, 1>>>(dev_numerator, dev_denominator, dev_alpha);
+        // cudaMemcpy(h_float, dev_alpha, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_alpha test: %f \n", *h_float);
+
+        // break;
         cudaMemset(dev_alpha, 0, sizeof(float));
         cudaMemset(dev_denominator, 0, sizeof(float));
         cudaMemset(dev_numerator, 0, sizeof(float));
         cudaMemset(dev_beta, 0, sizeof(float));
 
+
+        // cudaMemcpy(h_float, dev_z, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_z test: %g \n", *h_float);
         dot<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); // r(k)^T * z(k)
+        // cudaMemcpy(h_float, dev_numerator, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_numerator test: %g \n", *h_float);
+
         AP(J, dev_p, dev_Ap, N, M); 
-        dot<<<(N+255)/256, 256>>>(dev_Ap, dev_p, dev_denominator, N); // p(k)^T * Ap(k) 
+
+        dot<<<(N+255)/256, 256>>>(dev_p, dev_Ap, dev_denominator, N); // p(k)^T * Ap(k) 
+        // cudaMemcpy(h_float, dev_denominator, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_denominator test: %g \n", *h_float);
+
         scalar_divide<<<1, 1>>>(dev_numerator, dev_denominator, dev_alpha); // alpha = r(k)^T * z(k) / p(k)^T * Ap(k) 
         
         //Calculate next x
         // float temp_alpha = 0.2;
-        cudaMemcpy(h_float, dev_alpha, sizeof(float), cudaMemcpyDeviceToHost);
-        printf("dev_alpha: %f \n", *h_float);
+        // cudaMemcpy(h_float, dev_alpha, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_alpha: %g \n", *h_float);
+
+        // break;
         next_x<<<(N+255)/256, 256>>>(x, dev_p, dev_alpha, N);
         dot<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); // r(k+1)^T * r(k+1), this is for the denomiator in the beta calculation
+        // cudaMemcpy(h_float, &dev_r[0], sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_r: %g \n", *h_float);
+        // cudaMemcpy(h_float, &dev_Ap[0], sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("dev_Ap: %g \n", *h_float);
         next_r<<<(N+255)/256, 256>>>(dev_r, dev_Ap, dev_alpha, N);
         dot<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_R, N); // R = r(k+1)^T * r(k+1)
         
         // Check if R/Rprev > 0.85 or R < eps
         cudaMemcpy(h_R, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
-        printf("R: %f, Rprev: %f \n", *h_R, *h_R_prev);
-        if (*h_R/ *h_R_prev > 0.85 || *h_R < eps){
+        // printf("R: %g, Rprev: %g \n", *h_R, *h_R_prev);
+        // printf("R/R_prev: %g \n", (*h_R/ *h_R_prev));
+        if (*h_R/ *h_R_prev > 0.85f){
             break;
         }
         
@@ -295,7 +339,7 @@ void GaussNewton::gaussNewtonUpdate(
 
         // 
         *h_R_prev = *h_R;
-        printf("R_prev: %f \n", *h_R_prev);
+        // printf("R_prev: %g \n", *h_R_prev);
         next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
         dot<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); // r(k+1)^T * z(k+1)
         scalar_divide<<<1, 1>>>(dev_numerator, dev_denominator, dev_beta); // beta = r(k+1)^T * z(k+1) / r(k)^T * z(k)
