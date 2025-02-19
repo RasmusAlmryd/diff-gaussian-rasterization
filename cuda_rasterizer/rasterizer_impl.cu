@@ -355,7 +355,8 @@ void perGaussianContribCount(
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W&& pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
-	bool done = !inside;
+	// bool done = !inside;
+	if(!inside) return;
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint32_t tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
@@ -367,7 +368,7 @@ void perGaussianContribCount(
 	// loop over all gaussians contributing to this pixel
 	for(int i = 0; i < toDo; i++){
 
-		if (i >= last_contributor) break;
+		if (i >= last_contributor) return;
 		int splat_idx_global = range.x + i;
 		atomicAdd(&gaussian_contrib[splat_idx_global], 1);
 	}
@@ -377,7 +378,7 @@ void perGaussianContribCount(
 
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
-std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
+std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
@@ -551,20 +552,40 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 		binningState.gaussian_contrib
 	);
 
+	int gauss_residuals;
+	for (int i = 0; i < 1000; i+=50){
+		CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	
+		printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
+	}
+
+	// uint2 test_range;
+	// CHECK_CUDA(cudaMemcpy(&test_range, &imgState.ranges[0], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
+
+	// printf("range of tile #1: x: %d y: %d, range: %d \n", test_range.x, test_range.y, test_range.y-test_range.x);
+
+	// int pix_contrib;
+	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[0], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// printf("n_contrib[0]: %d \n", pix_contrib);
+
+	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[70], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// printf("n_contrib[70]: %d \n", pix_contrib);
+
 	// to prefix sum over gaussian_contrib
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, P), debug)
 
 	int num_residuals;
 	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	printf("num_residuals: %d", num_residuals);
+	// printf("num_residuals: %d", num_residuals);
+	// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
 
-	return std::make_tuple(num_rendered, bucket_sum);
+	return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 }
 
 // Produce necessary gradients for optimization, corresponding
 // to forward render pass
 void CudaRasterizer::Rasterizer::backward(
-	const int P, int D, int M, int R, int B,
+	const int P, int D, int M, int R, int B, int K, // K is the number of residuals
 	const float* background,
 	const int width, int height,
 	const float* means3D,
@@ -607,7 +628,15 @@ void CudaRasterizer::Rasterizer::backward(
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
 
-	// float* 
+	printf("num residuals: %d\n", K);
+	// printf("num residuals/num gaussians: %f\n", (float)K / (float)R);
+
+
+
+	// int gauss_residuals;
+	// CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[6322], sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	// printf("number of residuals contributed to by gaussian #1: %d\n", gauss_residuals);
 
 	if (radii == nullptr)
 	{

@@ -50,7 +50,7 @@ std::function<float*(size_t N)> resizeFloatFunctional(torch::Tensor& t) {
     return lambda;
 }
 
-std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -102,6 +102,7 @@ RasterizeGaussiansCUDA(
   std::function<char*(size_t)> sampleFunc = resizeFunctional(sampleBuffer);
   
   int rendered = 0;
+  int num_residuals = 0;
   int num_buckets = 0;
   if(P != 0)
   {
@@ -141,9 +142,10 @@ RasterizeGaussiansCUDA(
 		debug);
 		
 		rendered = std::get<0>(tup);
-		num_buckets = std::get<1>(tup);
+		num_residuals = std::get<1>(tup);
+		num_buckets = std::get<2>(tup);
   }
-  return std::make_tuple(rendered, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer);
+  return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -169,6 +171,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& campos,
 	const torch::Tensor& geomBuffer,
 	const int R,
+	const int K, // num sparse residual
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
 	const int B,
@@ -200,11 +203,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   int num_images = 1;
 
-  torch::Tensor dr_dxs = torch::zeros({R,59,num_images}, means3D.options());
+  torch::Tensor dr_dxs = torch::zeros({K,num_images}, means3D.options());
   
   if(P != 0)
   {  
-	  CudaRasterizer::Rasterizer::backward(P, degree, M, R, B,
+	  CudaRasterizer::Rasterizer::backward(P, degree, M, R, B, K,
 	  background.contiguous().data<float>(),
 	  W, H, 
 	  means3D.contiguous().data<float>(),
