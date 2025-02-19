@@ -306,6 +306,11 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 		binning.point_list_keys_unsorted, binning.point_list_keys,
 		binning.point_list_unsorted, binning.point_list, P);
 	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
+
+	obtain(chunk, binning.gaussian_contrib, P, 128);
+	cub::DeviceScan::InclusiveSum(nullptr, binning.gaussian_contrib_scan_size, binning.gaussian_contrib, binning.gaussian_contrib, P);
+	obtain(chunk, binning.gaussian_contrib_scan_space, binning.gaussian_contrib_scan_size, 128);
+
 	return binning;
 }
 
@@ -326,6 +331,47 @@ __global__ void set(int N, uint32_t* where, int* space)
 	int off = (idx == 0) ? 0 : where[idx-1];
 
 	space[off] = 1;
+}
+
+// calculate number of pixels/residuals a duplicate gaussian contributes to
+__global__
+void perGaussianContribCount(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ n_contrib,
+	int W, int H,
+	uint32_t* gaussian_contrib
+){
+
+
+	// Identify current tile and associated min/max pixel range.
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	uint32_t pix_id = W * pix.y + pix.x;
+	float2 pixf = { (float)pix.x, (float)pix.y };
+
+	// Check if this thread is associated with a valid pixel or outside.
+	bool inside = pix.x < W&& pix.y < H;
+	// Done threads can help with fetching, but don't rasterize
+	bool done = !inside;
+
+	// Load start/end range of IDs to process in bit sorted list.
+	uint32_t tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
+	uint2 range = ranges[tile_id];
+	int toDo = range.y - range.x;
+
+	float last_contributor = n_contrib[pix_id];
+
+	// loop over all gaussians contributing to this pixel
+	for(int i = 0; i < toDo; i++){
+
+		if (i >= last_contributor) break;
+		int splat_idx_global = range.x + i;
+		atomicAdd(&gaussian_contrib[splat_idx_global], 1);
+	}
+	
 }
 
 
@@ -494,6 +540,24 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHANNELS_3DGS, cudaMemcpyDeviceToDevice), debug);
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
+
+	// gaussian_contrib len = P (duplicate gaussians)
+	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, P * sizeof(uint32_t)), debug);
+
+	perGaussianContribCount<<<tile_grid, block >>>(
+		imgState.ranges,
+		imgState.n_contrib,
+		width, height,
+		binningState.gaussian_contrib
+	);
+
+	// to prefix sum over gaussian_contrib
+	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, P), debug)
+
+	int num_residuals;
+	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+	printf("num_residuals: %d", num_residuals);
+
 	return std::make_tuple(num_rendered, bucket_sum);
 }
 
@@ -534,6 +598,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dsh,
 	float* dL_dscale,
 	float* dL_drot,
+	float* dr_dxs,
 	bool antialiasing,
 	bool debug)
 {
@@ -541,6 +606,8 @@ void CudaRasterizer::Rasterizer::backward(
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
+
+	// float* 
 
 	if (radii == nullptr)
 	{
@@ -584,7 +651,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dcolor,
-		dL_dinvdepth), debug)
+		dL_dinvdepth,
+		dr_dxs), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

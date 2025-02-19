@@ -98,6 +98,12 @@ void gaussNewtonUpdate(
 	const uint32_t N, 
 	const uint32_t M  
 );
+
+// void sumNumContrib(
+//     int W, int H,
+//     const int* n_contrib,
+//     torch::Tensor sum
+// )
 	
 torch::Tensor
 fusedssim(

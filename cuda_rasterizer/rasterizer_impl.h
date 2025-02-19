@@ -75,6 +75,10 @@ namespace CudaRasterizer
 		char* scan_space;
 		char* list_sorting_space;
 
+		uint32_t* gaussian_contrib;
+		size_t gaussian_contrib_scan_size;
+		char* gaussian_contrib_scan_space;
+
 		static BinningState fromChunk(char*& chunk, size_t P);
 	};
 

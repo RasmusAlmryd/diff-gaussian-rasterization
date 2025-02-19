@@ -197,6 +197,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options()); // quats {P, 3, 3}
+
+  int num_images = 1;
+
+  torch::Tensor dr_dxs = torch::zeros({R,59,num_images}, means3D.options());
   
   if(P != 0)
   {  
@@ -235,6 +239,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dsh.contiguous().data<float>(),
 	  dL_dscales.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
+	  dr_dxs.contiguous().data<float>(),
 	  antialiasing,
 	  debug);
   }

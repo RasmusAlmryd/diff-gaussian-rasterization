@@ -156,6 +156,15 @@ void subtract(float* a, float* b, float* c, uint32_t N){
     c[idx] = a[idx] - b[idx];
 }
 
+__global__ 
+void sumContrib(int W, int H, const uint32_t* n_contrib, int* sum){
+    uint2 pix = { blockIdx.x*blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y};
+    uint32_t pix_id = W * pix.y + pix.x;
+    int val = n_contrib[pix_id];
+    atomicAdd(sum, val);
+
+}
+
 
 void GaussNewton::gaussNewtonUpdate(
     float* x,   // Is named delta in init.py : Check argument position.
@@ -307,6 +316,7 @@ void GaussNewton::gaussNewtonUpdate(
     cudaFree(dev_R);
     cudaFree(dev_R_prev);
     cudaFree(dev_Ap);
+    cudaFree(dev_Ax0);
     cudaFree(dev_alpha);
     cudaFree(dev_denominator);
     cudaFree(dev_numerator);

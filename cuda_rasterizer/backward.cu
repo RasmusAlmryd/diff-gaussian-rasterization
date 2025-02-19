@@ -473,7 +473,8 @@ PerGaussianRenderCUDA(
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
-	float* __restrict__ dL_dinvdepths
+	float* __restrict__ dL_dinvdepths,
+	float* __restrict__ dr_dxs
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -637,6 +638,34 @@ PerGaussianRenderCUDA(
 			Register_dL_dconic2D_y += -0.5f * gdx * d.y * dL_dG;
 			Register_dL_dconic2D_w += -0.5f * gdy * d.y * dL_dG;
 			Register_dL_dopacity += G * dL_dalpha;
+
+
+			// gaussian_offset(gaussian_idx) = accum pixels
+			// gaussian_contrib = num pixels gaussian contrib
+			// running pixel offset = prefix sum n_contrib? 
+			// pixel passing last_contrib check, index var ++?
+			// would give residuals for gaussians per tile t1: [g1, g1, g1, g3, g3, g5, g5] t2: [g3, g4, g4 g5]
+			// know how many gaussians contrib to pixel: n_contrib
+			// know that gaussians rendered back to front
+			// pixel prefix sum => pixel_offset[pix_id] + gaussian_pixel_index[gaussian]
+			// gaussian_offset[gaussian] = prefix sum of gaussian * num_pixel_contrib_by_gaussian
+			// ordered by gaussian: gaussian_offset[gaussian] + pixel_gaussian_index[gaussian]
+
+			// index = n_contrib_prefix_sum[pix_id] * gauss_pix_id[gaussian]
+			// gauss_pix_id[gaussian] = splat_idx_in_tile[gaussian] - range.x 
+
+
+			// atomicAdd(&dr_dxs[last_contributor * pix_id + gaussian_idx], );
+			// atomicAdd(&dr_dxs[], );
+			// atomicAdd(&dr_dxs[], );
+			// atomicAdd(&dr_dxs[], );
+			// atomicAdd(&dr_dxs[], );
+			// atomicAdd(&dr_dxs[], );
+			// for (int ch = 0; ch < C; ++ch) {
+			// 	atomicAdd(&dL_dcolors[gaussian_idx * C + ch], Register_dL_dcolors[ch]);
+			// }
+			// atomicAdd(&dr_dxs[], );
+			// atomicAdd(&dr_dxs[], );
 		}
 	}
 
@@ -757,7 +786,8 @@ void BACKWARD::render(
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors,
-	float* dL_dinvdepths)
+	float* dL_dinvdepths,
+	float* dr_dxs)
 {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
@@ -783,6 +813,7 @@ void BACKWARD::render(
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dcolors, 
-		dL_dinvdepths
+		dL_dinvdepths,
+		dr_dxs
 		);
 }

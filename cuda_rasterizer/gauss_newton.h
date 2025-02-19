@@ -20,6 +20,8 @@ namespace GaussNewton {
         const uint32_t N, // number of parameters
         const uint32_t M  // number of residuals
         );
+
+    
 }
 
 #endif
