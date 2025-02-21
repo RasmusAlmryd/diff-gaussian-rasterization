@@ -24,7 +24,7 @@ namespace BACKWARD
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
 		const uint32_t* point_list,
-		int W, int H, int R, int B,
+		int W, int H, int P, int R, int B, int K, 
 		const uint32_t* per_bucket_tile_offset,
 		const uint32_t* bucket_to_tile,
 		const float* sampled_T, const float* sampled_ar, const float* sampled_ard,
@@ -36,6 +36,7 @@ namespace BACKWARD
 		const float* final_Ts,
 		const uint32_t* n_contrib,
 		const uint32_t* max_contrib,
+		const uint32_t* gaussian_contrib, 
 		const float* pixel_colors,
 		const float* pixel_indepths,
 		const float* dL_dpixels,
@@ -45,7 +46,8 @@ namespace BACKWARD
 		float* dL_dopacity,
 		float* dL_dcolors,
 		float* dL_dinvdepths,
-		float* dr_dxs);
+		float* dr_dxs,
+		int* residual_index);
 
 	void preprocess(
 		int P, int D, int M,

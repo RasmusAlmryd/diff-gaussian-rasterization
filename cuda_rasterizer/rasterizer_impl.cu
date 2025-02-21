@@ -542,8 +542,8 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHANNELS_3DGS, cudaMemcpyDeviceToDevice), debug);
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
 
-	// gaussian_contrib len = P (duplicate gaussians)
-	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, P * sizeof(uint32_t)), debug);
+	// gaussian_contrib len = num_rendered (duplicate gaussians)
+	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
 
 	perGaussianContribCount<<<tile_grid, block >>>(
 		imgState.ranges,
@@ -552,12 +552,12 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		binningState.gaussian_contrib
 	);
 
-	int gauss_residuals;
-	for (int i = 0; i < 1000; i+=50){
-		CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// int gauss_residuals;
+	// for (int i = 0; i < 1000; i+=50){
+	// 	CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 	
-		printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
-	}
+	// 	printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
+	// }
 
 	// uint2 test_range;
 	// CHECK_CUDA(cudaMemcpy(&test_range, &imgState.ranges[0], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
@@ -620,6 +620,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dscale,
 	float* dL_drot,
 	float* dr_dxs,
+	int* residual_index,
 	bool antialiasing,
 	bool debug)
 {
@@ -628,7 +629,7 @@ void CudaRasterizer::Rasterizer::backward(
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
 
-	printf("num residuals: %d\n", K);
+	//printf("num residuals: %d\n", K);   //Useful prints for debugging
 	// printf("num residuals/num gaussians: %f\n", (float)K / (float)R);
 
 
@@ -658,7 +659,7 @@ void CudaRasterizer::Rasterizer::backward(
 		block,
 		imgState.ranges,
 		binningState.point_list,
-		width, height, R, B,
+		width, height, P, R, B, K, 
 		imgState.bucket_offsets,
 		sampleState.bucket_to_tile,
 		sampleState.T,
@@ -672,6 +673,7 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		imgState.max_contrib,
+		binningState.gaussian_contrib,
 		imgState.pixel_colors,
 		imgState.pixel_invDepths,
 		dL_dpix,
@@ -681,7 +683,16 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dopacity,
 		dL_dcolor,
 		dL_dinvdepth,
-		dr_dxs), debug)
+		dr_dxs, residual_index), debug)
+
+	float test;
+	int test_index;
+	for (int i = 0; i < 256; i+=8){
+	 	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+		CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	 	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
+	}
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

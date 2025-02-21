@@ -204,7 +204,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   int num_images = 1;
 
   torch::Tensor dr_dxs = torch::zeros({K,num_images}, means3D.options());
-  
+  torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kInt32));
+
   if(P != 0)
   {  
 	  CudaRasterizer::Rasterizer::backward(P, degree, M, R, B, K,
@@ -243,6 +244,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dscales.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
 	  dr_dxs.contiguous().data<float>(),
+	  residual_index.contiguous().data<int>(),
 	  antialiasing,
 	  debug);
   }

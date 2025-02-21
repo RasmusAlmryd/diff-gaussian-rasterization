@@ -453,7 +453,7 @@ __global__ void
 PerGaussianRenderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H, int B,
+	int W, int H, int P, int B, int K,
 	const uint32_t* __restrict__ per_tile_bucket_offset,
 	const uint32_t* __restrict__ bucket_to_tile,
 	const float* __restrict__ sampled_T, const float* __restrict__ sampled_ar, const float* __restrict__ sampled_ard,
@@ -465,6 +465,7 @@ PerGaussianRenderCUDA(
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
 	const uint32_t* __restrict__ max_contrib,
+	const uint32_t* __restrict__ gaussian_contrib,
 	const float* __restrict__ pixel_colors,
 	const float* __restrict__ pixel_invDepths,
 	const float* __restrict__ dL_dpixels,
@@ -474,7 +475,8 @@ PerGaussianRenderCUDA(
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dinvdepths,
-	float* __restrict__ dr_dxs
+	float* __restrict__ dr_dxs,
+	int* __restrict__ residual_index
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -545,6 +547,13 @@ PerGaussianRenderCUDA(
 	float dL_invdepth;
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
+
+	// Iterator for contributed pixels
+	int pixel_iterator = 0;
+	int global_gaussian_offset = 0;
+	if (splat_idx_global != 0)
+		global_gaussian_offset = gaussian_contrib[splat_idx_global - 1];
+	int global_gaussian_offset_end = gaussian_contrib[splat_idx_global];
 
 	// iterate over all pixels in the tile
 	for (int i = 0; i < BLOCK_SIZE + 31; ++i) {
@@ -665,7 +674,17 @@ PerGaussianRenderCUDA(
 			// 	atomicAdd(&dL_dcolors[gaussian_idx * C + ch], Register_dL_dcolors[ch]);
 			// }
 			// atomicAdd(&dr_dxs[], );
-			// atomicAdd(&dr_dxs[], );
+			int pixel_offset = global_gaussian_offset + pixel_iterator;
+			if (pixel_offset > global_gaussian_offset_end) {
+				break;
+			}
+			atomicAdd(&dr_dxs[pixel_offset], dL_dG); 
+			atomicAdd(&residual_index[pixel_offset], gaussian_idx);
+			//residual_index[pixel_offset] = gaussian_idx * P + (int)pix_id;
+			pixel_iterator++;
+			
+
+
 		}
 	}
 
@@ -766,7 +785,7 @@ void BACKWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H, int R, int B,
+	int W, int H, int P, int R, int B, int K,
 	const uint32_t* per_bucket_tile_offset,
 	const uint32_t* bucket_to_tile,
 	const float* sampled_T, const float* sampled_ar, const float* sampled_ard,
@@ -778,6 +797,7 @@ void BACKWARD::render(
 	const float* final_Ts,
 	const uint32_t* n_contrib,
 	const uint32_t* max_contrib,
+	const uint32_t* gaussian_contrib,
 	const float* pixel_colors,
 	const float* pixel_invDepths,
 	const float* dL_dpixels,
@@ -787,13 +807,14 @@ void BACKWARD::render(
 	float* dL_dopacity,
 	float* dL_dcolors,
 	float* dL_dinvdepths,
-	float* dr_dxs)
+	float* dr_dxs,
+	int* residual_index)
 {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
 		ranges,
 		point_list,
-		W, H, B,
+		W, H, P, B, K,
 		per_bucket_tile_offset,
 		bucket_to_tile,
 		sampled_T, sampled_ar, sampled_ard,
@@ -805,6 +826,7 @@ void BACKWARD::render(
 		final_Ts,
 		n_contrib,
 		max_contrib,
+		gaussian_contrib,
 		pixel_colors,
 		pixel_invDepths,
 		dL_dpixels,
@@ -814,6 +836,7 @@ void BACKWARD::render(
 		dL_dopacity,
 		dL_dcolors, 
 		dL_dinvdepths,
-		dr_dxs
+		dr_dxs,
+		residual_index
 		);
 }
