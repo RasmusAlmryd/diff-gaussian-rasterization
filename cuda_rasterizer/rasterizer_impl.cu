@@ -22,6 +22,8 @@
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
+#include <stdexcept>
+
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
@@ -268,6 +270,7 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	ImageState img;
 	obtain(chunk, img.accum_alpha, N, 128);
 	obtain(chunk, img.n_contrib, N, 128);
+	obtain(chunk, img.actual_contrib, N, 128);
 	obtain(chunk, img.ranges, N, 128);
 	int* dummy = nullptr;
 	int* wummy = nullptr;
@@ -534,6 +537,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		imgState.max_contrib,
+		imgState.actual_contrib,
 		background,
 		out_color,
 		geomState.depths,
@@ -572,12 +576,32 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	// printf("n_contrib[70]: %d \n", pix_contrib);
 
 	// to prefix sum over gaussian_contrib
-	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, P), debug)
+	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
 
 	int num_residuals;
-	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// printf("num_residuals: %d", num_residuals);
+	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+	printf("num_residuals: %d \n", num_residuals);
 	// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
+
+
+
+
+	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
+
+	perGaussianContribCount<<<tile_grid, block >>>(
+		imgState.ranges,
+		imgState.actual_contrib,
+		width, height,
+		binningState.gaussian_contrib
+	);
+
+	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
+
+	int num_residuals2;
+	CHECK_CUDA(cudaMemcpy(&num_residuals2, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+	printf("num_residuals: %d \n", num_residuals2);
+
+	throw std::invalid_argument("temp exception.. REMOVE");
 
 	return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 }
@@ -629,7 +653,7 @@ void CudaRasterizer::Rasterizer::backward(
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
 
-	//printf("num residuals: %d\n", K);   //Useful prints for debugging
+	printf("num residuals: %d\n", K);   //Useful prints for debugging
 	// printf("num residuals/num gaussians: %f\n", (float)K / (float)R);
 
 
@@ -687,12 +711,14 @@ void CudaRasterizer::Rasterizer::backward(
 
 	float test;
 	int test_index;
-	for (int i = 0; i < 256; i+=8){
-	 	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
-		CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// for (int i = 20000; i < 20300; i+=1){
+	//  	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+	// 	CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	 	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
-	}
+	//  	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
+	// }
+
+	throw std::invalid_argument("temp exception.. REMOVE");
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

@@ -64,6 +64,7 @@ namespace FORWARD
 		float* final_T,
 		uint32_t* n_contrib,
 		uint32_t* max_contrib,
+		uint32_t* actual_contrib,
 		const float* bg_color,
 		float* out_color,
 		float* depths,

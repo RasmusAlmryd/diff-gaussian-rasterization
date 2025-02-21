@@ -292,6 +292,7 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	uint32_t* __restrict__ max_contrib,
+	uint32_t* __restrict__ actual_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	const float* __restrict__ depths,
@@ -336,6 +337,8 @@ renderCUDA(
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
+	// uint32_t pix_id_check = 5000;
+	uint32_t actual_contributions = 0; 
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 	float expected_invdepth = 0.0f;
@@ -409,8 +412,18 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
+
+			actual_contributions++;
 		}
 	}
+
+	// atomicAdd(count, actual_contrib);
+	// atomicAdd(bad_count, last_contributor);
+
+	// if(pix_id % pix_id_check == 0){
+	// 	printf("last contribution: %d, actual contribution: %d\n", last_contributor, actual_contrib);
+	// }
+
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
@@ -418,6 +431,7 @@ renderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
+		actual_contrib[pix_id] = actual_contributions;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 		invdepth[pix_id] = expected_invdepth;
@@ -446,11 +460,13 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	uint32_t* max_contrib,
+	uint32_t* actual_contrib,
 	const float* bg_color,
 	float* out_color,
 	float* depths,
 	float* depth)
 {
+
 	renderCUDA<NUM_CHANNELS_3DGS> << <grid, block >> > (
 		ranges,
 		point_list,
@@ -463,10 +479,13 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		max_contrib,
+		actual_contrib,
 		bg_color,
 		out_color,
 		depths,
 		depth);
+
+
 }
 
 void FORWARD::preprocess(int P, int D, int M,

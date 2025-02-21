@@ -679,7 +679,12 @@ PerGaussianRenderCUDA(
 				break;
 			}
 			atomicAdd(&dr_dxs[pixel_offset], dL_dG); 
-			atomicAdd(&residual_index[pixel_offset], gaussian_idx);
+			atomicAdd(&residual_index[pixel_offset], gaussian_idx * P + pix_id);
+
+			// if(pixel_offset == 0) {
+			// 	// printf("\n");
+			// 	printf("gaussian: [%d] global(%d) |  pixel_offset: %d, gaussian_offset: %d , pixel iterator: %d \n",gaussian_idx, splat_idx_global, pixel_offset, global_gaussian_offset, pixel_iterator);
+			// }
 			//residual_index[pixel_offset] = gaussian_idx * P + (int)pix_id;
 			pixel_iterator++;
 			
