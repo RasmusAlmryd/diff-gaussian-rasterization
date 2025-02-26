@@ -93,6 +93,17 @@ namespace CudaRasterizer
 		static SampleState fromChunk(char*& chunk, size_t C);
 	};
 
+	struct ResidualState
+	{
+		size_t scan_size;
+		size_t sorting_size;
+		uint64_t* list_keys_temp;
+		float* list_values_temp;
+		char* sorting_space;
+
+		static ResidualState fromChunk(char*& chunk, size_t R);
+	};
+
 	template<typename T> 
 	size_t required(size_t P)
 	{

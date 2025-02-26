@@ -14,6 +14,7 @@
 
 #include <vector>
 #include <functional>
+#include <glm/glm.hpp>
 
 namespace CudaRasterizer
 {
@@ -33,6 +34,7 @@ namespace CudaRasterizer
 			std::function<char* (size_t)> binningBuffer,
 			std::function<char* (size_t)> imageBuffer,
 			std::function<char* (size_t)> sampleBuffer,
+			std::function<char* (size_t)> residualBuffer,
 			const int P, int D, int M,
 			const float* background,
 			const int width, int height,
@@ -78,6 +80,7 @@ namespace CudaRasterizer
 			char* binning_buffer,
 			char* image_buffer,
 			char* sample_buffer,
+			char* residual_buffer,
 			const float* dL_dpix,
 			const float* dL_invdepths,
 			float* dL_dmean2D,
@@ -92,7 +95,8 @@ namespace CudaRasterizer
 			float* dL_dscale,
 			float* dL_drot,
 			float* dr_dxs,
-			int* residual_index,
+			uint64_t* residual_index,
+			int* p_sum,
 			bool antialiasing,
 			bool debug);
 	};

@@ -476,7 +476,7 @@ PerGaussianRenderCUDA(
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dinvdepths,
 	float* __restrict__ dr_dxs,
-	int* __restrict__ residual_index
+	uint64_t* __restrict__ residual_index
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -592,22 +592,35 @@ PerGaussianRenderCUDA(
 			}
 			dL_invdepth = dL_invdepths[pix_id];
 		}
-
+		
 		// do work
 		if (valid_splat && valid_pixel && 0 <= idx && idx < BLOCK_SIZE) {
+
+			
 			if (W <= pix.x || H <= pix.y) continue;
-
+			
+			
 			if (splat_idx_in_tile >= last_contributor) continue;
-
+			
 			// compute blending values
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f) continue;
 			const float G = exp(power);
 			const float alpha = min(0.99f, con_o.w * G);
+			
+			
+			int pixel_offset = global_gaussian_offset + pixel_iterator;
+			if (pixel_offset >= global_gaussian_offset_end) {
+				break;
+			}
+			atomicAdd(&residual_index[pixel_offset], pix_id * P + gaussian_idx); //index for sorting by pixel id
+			pixel_iterator++;
+
 			if (alpha < 1.0f / 255.0f) continue;
 			const float weight = alpha * T;
 
+			
 			// add the gradient contribution of this pixel's colour to the gaussian
 			float bg_dot_dpixel = 0.0f;
 			float dL_dalpha = 0.0f;
@@ -616,39 +629,39 @@ PerGaussianRenderCUDA(
 				const float &dL_dchannel = dL_dpixel[ch];
 				Register_dL_dcolors[ch] += weight * dL_dchannel;
 				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
-
+				
 				bg_dot_dpixel += bg_color[ch] * dL_dpixel[ch];
 			}
-
+			
 			// // add the gradient contribution of this pixel's depth to the gaussian
 			ard += weight * invd;
 			Register_dL_dinvdepths += weight * dL_invdepth;
 			dL_dalpha += ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
-
+			
 			// Account for last sample for colour
 			dL_dalpha += (-T_final / (1.0f - alpha)) * bg_dot_dpixel;
 			T *= (1.0f - alpha);
-
-
+			
+			
 			// Helpful reusable temporary variables
 			const float dL_dG = con_o.w * dL_dalpha;
 			const float gdx = G * d.x;
 			const float gdy = G * d.y;
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
 			const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
-
+			
 			// accumulate the gradients
 			const float tmp_x = dL_dG * dG_ddelx * ddelx_dx;
 			Register_dL_dmean2D_x += tmp_x;
 			const float tmp_y = dL_dG * dG_ddely * ddely_dy;
 			Register_dL_dmean2D_y += tmp_y;
-
+			
 			Register_dL_dconic2D_x += -0.5f * gdx * d.x * dL_dG;
 			Register_dL_dconic2D_y += -0.5f * gdx * d.y * dL_dG;
 			Register_dL_dconic2D_w += -0.5f * gdy * d.y * dL_dG;
 			Register_dL_dopacity += G * dL_dalpha;
-
-
+			
+			
 			// gaussian_offset(gaussian_idx) = accum pixels
 			// gaussian_contrib = num pixels gaussian contrib
 			// running pixel offset = prefix sum n_contrib? 
@@ -674,19 +687,23 @@ PerGaussianRenderCUDA(
 			// 	atomicAdd(&dL_dcolors[gaussian_idx * C + ch], Register_dL_dcolors[ch]);
 			// }
 			// atomicAdd(&dr_dxs[], );
-			int pixel_offset = global_gaussian_offset + pixel_iterator;
-			if (pixel_offset > global_gaussian_offset_end) {
+			// if(splat_idx_global == 250){
+			// 	printf("pixel offset %d, range [%d, %d], pix_id: %d \n", pixel_offset, global_gaussian_offset, global_gaussian_offset_end, pix_id);
+			// }
+
+			if (pixel_offset >= global_gaussian_offset_end) {
+				// if(splat_idx_global == 250){
+				// 	printf("BREAK :: pixel offset %d, range [%d, %d], pix_id: %d \n", pixel_offset, global_gaussian_offset, global_gaussian_offset_end, pix_id);
+				// }
 				break;
 			}
-			atomicAdd(&dr_dxs[pixel_offset], dL_dG); 
-			atomicAdd(&residual_index[pixel_offset], gaussian_idx * P + pix_id);
+			atomicAdd(&dr_dxs[pixel_offset-1], dL_dG); 
 
 			// if(pixel_offset == 0) {
 			// 	// printf("\n");
 			// 	printf("gaussian: [%d] global(%d) |  pixel_offset: %d, gaussian_offset: %d , pixel iterator: %d \n",gaussian_idx, splat_idx_global, pixel_offset, global_gaussian_offset, pixel_iterator);
 			// }
 			//residual_index[pixel_offset] = gaussian_idx * P + (int)pix_id;
-			pixel_iterator++;
 			
 
 
@@ -813,7 +830,7 @@ void BACKWARD::render(
 	float* dL_dcolors,
 	float* dL_dinvdepths,
 	float* dr_dxs,
-	int* residual_index)
+	uint64_t* residual_index)
 {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(

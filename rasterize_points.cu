@@ -50,7 +50,7 @@ std::function<float*(size_t N)> resizeFloatFunctional(torch::Tensor& t) {
     return lambda;
 }
 
-std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -96,10 +96,12 @@ RasterizeGaussiansCUDA(
   torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
   torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
   torch::Tensor sampleBuffer = torch::empty({0}, options.device(device));
+  torch::Tensor residualBuffer = torch::empty({0}, options.device(device));
   std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
   std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
   std::function<char*(size_t)> sampleFunc = resizeFunctional(sampleBuffer);
+  std::function<char*(size_t)> residualFunc = resizeFunctional(residualBuffer);
   
   int rendered = 0;
   int num_residuals = 0;
@@ -117,6 +119,7 @@ RasterizeGaussiansCUDA(
 		binningFunc,
 		imgFunc,
 		sampleFunc,
+		residualFunc,
 	    P, degree, M,
 		background.contiguous().data<float>(),
 		W, H,
@@ -145,7 +148,7 @@ RasterizeGaussiansCUDA(
 		num_residuals = std::get<1>(tup);
 		num_buckets = std::get<2>(tup);
   }
-  return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer);
+  return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -176,6 +179,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& imageBuffer,
 	const int B,
 	const torch::Tensor& sampleBuffer,
+	const torch::Tensor& residualBuffer,
 	const bool antialiasing,
 	const bool debug) 
 {
@@ -204,7 +208,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   int num_images = 1;
 
   torch::Tensor dr_dxs = torch::zeros({K,num_images}, means3D.options());
-  torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kInt32));
+  torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
+  torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kInt32));
 
   if(P != 0)
   {  
@@ -230,6 +235,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr()),
 	  reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
 	  reinterpret_cast<char*>(sampleBuffer.contiguous().data_ptr()),
+	  reinterpret_cast<char*>(residualBuffer.contiguous().data_ptr()),
 	  dL_dout_color.contiguous().data<float>(),
 	  dL_dout_invdepth.contiguous().data<float>(),
 	  dL_dmeans2D.contiguous().data<float>(),
@@ -244,7 +250,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dscales.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
 	  dr_dxs.contiguous().data<float>(),
-	  residual_index.contiguous().data<int>(),
+	  residual_index.contiguous().data<uint64_t>(),
+	  p_sum.contiguous().data<int>(),
 	  antialiasing,
 	  debug);
   }

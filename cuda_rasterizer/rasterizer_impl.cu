@@ -317,6 +317,24 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 	return binning;
 }
 
+CudaRasterizer::ResidualState CudaRasterizer::ResidualState::fromChunk(char*& chunk, size_t R)
+{
+	ResidualState residual;
+	obtain(chunk, residual.list_keys_temp, R, 128);
+	obtain(chunk, residual.list_values_temp, R, 128);
+	uint64_t* dummy = nullptr;
+	float* wummy = nullptr;
+	cub::DeviceRadixSort::SortPairs(
+		nullptr, residual.sorting_size, 
+		residual.list_keys_temp, dummy,
+		residual.list_values_temp, wummy, R);
+
+	obtain(chunk, residual.sorting_space, residual.sorting_size, 128);
+
+	
+	return residual;
+}
+
 __global__ void zero(int N, int* space)
 {
 	int idx = threadIdx.x + blockDim.x * blockIdx.x;
@@ -379,6 +397,20 @@ void perGaussianContribCount(
 }
 
 
+__global__
+void sortByGaussians(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ n_contrib,
+	int W, int H,
+	uint32_t* gaussian_contrib,
+	float* dr_dG,
+	int* residual_index,
+	int* p_sum)
+{
+
+}
+
+
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
 std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
@@ -386,6 +418,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
 	std::function<char* (size_t)> sampleBuffer,
+	std::function<char* (size_t)> residualBuffer,
 	const int P, int D, int M,
 	const float* background,
 	const int width, int height,
@@ -546,7 +579,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHANNELS_3DGS, cudaMemcpyDeviceToDevice), debug);
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
 
-	// gaussian_contrib len = num_rendered (duplicate gaussians)
+	//gaussian_contrib len = num_rendered (duplicate gaussians)
 	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
 
 	perGaussianContribCount<<<tile_grid, block >>>(
@@ -556,60 +589,66 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		binningState.gaussian_contrib
 	);
 
-	// int gauss_residuals;
-	// for (int i = 0; i < 1000; i+=50){
-	// 	CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 	
-	// 	printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
-	// }
-
 	// uint2 test_range;
 	// CHECK_CUDA(cudaMemcpy(&test_range, &imgState.ranges[0], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
-
+	
 	// printf("range of tile #1: x: %d y: %d, range: %d \n", test_range.x, test_range.y, test_range.y-test_range.x);
-
+	
 	// int pix_contrib;
 	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[0], sizeof(int), cudaMemcpyDeviceToHost), debug);
 	// printf("n_contrib[0]: %d \n", pix_contrib);
-
+	
 	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[70], sizeof(int), cudaMemcpyDeviceToHost), debug);
 	// printf("n_contrib[70]: %d \n", pix_contrib);
-
+	
 	// to prefix sum over gaussian_contrib
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
-
+	
 	int num_residuals;
 	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 	printf("num_residuals: %d \n", num_residuals);
 	// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
-
-
-
-
-	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
-
-	perGaussianContribCount<<<tile_grid, block >>>(
-		imgState.ranges,
-		imgState.actual_contrib,
-		width, height,
-		binningState.gaussian_contrib
-	);
-
-	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
-
-	int num_residuals2;
-	CHECK_CUDA(cudaMemcpy(&num_residuals2, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	printf("num_residuals: %d \n", num_residuals2);
-
-	throw std::invalid_argument("temp exception.. REMOVE");
-
+	
+	
+	
+	
+	// CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
+	
+	// perGaussianContribCount<<<tile_grid, block >>>(
+	// 	imgState.ranges,
+	// 	imgState.actual_contrib,
+	// 	width, height,
+	// 	binningState.gaussian_contrib
+	// );
+	
+	// // int gauss_residuals;
+	// // for (int i = 0; i < 10; i+=1){
+	// // 	CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	
+	// // 	printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
+	// // }
+	// CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
+	
+	// int num_residuals;
+	// CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// printf("num_residuals: %d \n", num_residuals);
+	
+	// throw std::invalid_argument("temp exception.. REMOVE");
+	size_t residual_chunk_size = required<ResidualState>(num_residuals);
+	char* residual_chunkptr = residualBuffer(residual_chunk_size);
+	ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
+	
 	return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 }
+
+
+
 
 // Produce necessary gradients for optimization, corresponding
 // to forward render pass
 void CudaRasterizer::Rasterizer::backward(
-	const int P, int D, int M, int R, int B, int K, // K is the number of residuals
+	const int P, int D, int M, int R, int B, int K, //P: num gaussian, R: num duplicate gaussians, K: num residuals
 	const float* background,
 	const int width, int height,
 	const float* means3D,
@@ -630,6 +669,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* binning_buffer,
 	char* img_buffer,
 	char* sample_buffer,
+	char* residual_buffer,
 	const float* dL_dpix,
 	const float* dL_invdepths,
 	float* dL_dmean2D,
@@ -644,7 +684,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dscale,
 	float* dL_drot,
 	float* dr_dxs,
-	int* residual_index,
+	uint64_t* residual_index,
+	int* p_sum, 
 	bool antialiasing,
 	bool debug)
 {
@@ -652,6 +693,8 @@ void CudaRasterizer::Rasterizer::backward(
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
+	ResidualState residualState = ResidualState::fromChunk(residual_buffer, K);
+
 
 	printf("num residuals: %d\n", K);   //Useful prints for debugging
 	// printf("num residuals/num gaussians: %f\n", (float)K / (float)R);
@@ -707,16 +750,50 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dopacity,
 		dL_dcolor,
 		dL_dinvdepth,
-		dr_dxs, residual_index), debug)
+		dr_dxs, 
+		residual_index), debug)
 
 	float test;
 	int test_index;
-	// for (int i = 20000; i < 20300; i+=1){
-	//  	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
-	// 	CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	for (int i = 0; i < 400; i+=1){
+	 	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+		CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	//  	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
-	// }
+	 	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
+	}
+
+
+
+	// CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+	// 	binningState.list_sorting_space,
+	// 	binningState.sorting_size,
+	// 	binningState.point_list_keys_unsorted, binningState.point_list_keys,
+	// 	binningState.point_list_unsorted, binningState.point_list,
+	// 	num_rendered, 0, 32 + bit), debug);
+
+	// int bit = getHigherMsb(P*width*height);
+	printf("----------------------------------------------------------------\n");
+	printf("SORTED: \n");
+
+
+	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+		residualState.sorting_space,
+		residualState.sorting_size,
+		residual_index, residualState.list_keys_temp,
+		dr_dxs, residualState.list_values_temp,
+		K), debug);
+	
+	printf("done sorting");
+
+
+
+	for (int i = 0; i < 400; i+=1){
+		CHECK_CUDA(cudaMemcpy(&test, &residualState.list_values_temp[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+		CHECK_CUDA(cudaMemcpy(&test_index, &residualState.list_keys_temp[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+		printf("Sparse dr_dxs content #%d: in index [%d] (pix_id: %d, gauss_id: %d)   : %g,   \n",i, test_index, (test_index / P), (test_index % P), test);
+	}
+
 
 	throw std::invalid_argument("temp exception.. REMOVE");
 
