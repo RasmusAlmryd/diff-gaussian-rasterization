@@ -96,7 +96,7 @@ namespace CudaRasterizer
 			float* dL_drot,
 			float* dr_dxs,
 			uint64_t* residual_index,
-			int* p_sum,
+			uint32_t* p_sum,
 			bool antialiasing,
 			bool debug);
 	};

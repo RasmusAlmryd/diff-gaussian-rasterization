@@ -166,17 +166,45 @@ void sumContrib(int W, int H, const uint32_t* n_contrib, int* sum){
 }
 
 
+
+__global__
+void JTv(float* out_JTv, float* sparse_J, uint64_t* indices, float* v, uint32_t N, uint32_t M, uint32_t num_entries){
+
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t residual_id = indices[idx] / M;
+    uint64_t gaussian_id = indices[idx] % M;
+
+    // execute once per gaussian parameter
+    // TODO: do extra calculations for each
+    float result = sparse_J[idx] * v[residual_id];
+
+    atomicAdd(&out_JTv[gaussian_id], result);
+}
+
+
+
 void GaussNewton::gaussNewtonUpdate(
     float* x,   // Is named delta in init.py : Check argument position.
-    float* J,
-    float* b,
+    float* sparse_J_values,
+    uint64_t* sparse_J_indices,
+    uint32_t* sparse_J_p_sum,
     float gamma,
     float alpha,
     const bool* tiles_touched,
     const uint32_t N, // number of parameters
-    const uint32_t M  // number of residuals
+    const uint32_t M,  // number of residuals
+    const uint32_t sparse_J_entries
     ){
 
+
+    // TODO: create b from sparse
+    // TODO: create M / M^-1
+    // TODO: create Ap, following perf or levenberg
+    // TODO: allow multiple images (stack sparse jacobians)
+
+    // b = JTv (v = r) = JTr
+
+    /*
     // r(0) = b
     float* dev_r;
     cudaMalloc(&dev_r, N * sizeof(float));
@@ -324,6 +352,7 @@ void GaussNewton::gaussNewtonUpdate(
     cudaFree(dev_z);
     cudaFree(M_precon);
     cudaFree(dev_r);
+    */
 
 }
 

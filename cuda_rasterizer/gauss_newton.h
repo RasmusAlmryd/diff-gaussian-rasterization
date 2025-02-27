@@ -12,13 +12,15 @@ namespace GaussNewton {
 
     void gaussNewtonUpdate(
         float* x,   // Is named delta in init.py : Check argument position.
-        float* J,
-        float* b,
+        float* sparse_J_values,
+        uint64_t* sparse_J_indices,
+        uint32_t* sparse_J_p_sum,
         float gamma,
         float alpha,
         const bool* tiles_touched,
         const uint32_t N, // number of parameters
-        const uint32_t M  // number of residuals
+        const uint32_t M,  // number of residuals
+        const uint32_t sparse_J_entries
         );
 
     

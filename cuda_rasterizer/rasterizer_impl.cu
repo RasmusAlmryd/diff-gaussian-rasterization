@@ -685,7 +685,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_drot,
 	float* dr_dxs,
 	uint64_t* residual_index,
-	int* p_sum, 
+	uint32_t* p_sum, 
 	bool antialiasing,
 	bool debug)
 {
@@ -795,7 +795,7 @@ void CudaRasterizer::Rasterizer::backward(
 	}
 
 
-	throw std::invalid_argument("temp exception.. REMOVE");
+	// throw std::invalid_argument("temp exception.. REMOVE");
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

@@ -39,7 +39,7 @@ RasterizeGaussiansCUDA(
 	const bool antialiasing,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -91,14 +91,16 @@ void adamUpdate(
 );
 
 void gaussNewtonUpdate(
-	torch::Tensor &x,   
-	torch::Tensor &J,
-	torch::Tensor &b,
-	float gamma,
-	float alpha,
-	torch::Tensor &tiles_touched,
-	const uint32_t N, 
-	const uint32_t M  
+    torch::Tensor &x,   // Is named delta in init.py : Check argument position.
+    torch::Tensor &sparse_J_values,
+    torch::Tensor &sparse_J_indices,
+    torch::Tensor &sparse_J_p_sum,
+    float gamma,
+    float alpha,
+    torch::Tensor &tiles_touched,
+    const uint32_t N, // number of parameters
+    const uint32_t M,  // number of residuals
+    const uint32_t sparse_J_entries
 );
 
 // void sumNumContrib(

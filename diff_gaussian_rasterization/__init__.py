@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch
 from . import _C
 from torch.optim.optimizer import Optimizer
+from dataclasses import dataclass
 
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
@@ -30,6 +31,7 @@ def rasterize_gaussians(
     rotations,
     cov3Ds_precomp,
     raster_settings,
+    sparse_J
 ):
     return _RasterizeGaussians.apply(
         means3D,
@@ -42,6 +44,7 @@ def rasterize_gaussians(
         rotations,
         cov3Ds_precomp,
         raster_settings,
+        sparse_J
     )
 
 class _RasterizeGaussians(torch.autograd.Function):
@@ -57,7 +60,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         scales,
         rotations,
         cov3Ds_precomp,
-        raster_settings
+        raster_settings,
+        sparse_J
     ):
 
         # Restructure arguments the way that the C++ lib expects them
@@ -103,6 +107,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.num_rendered = num_rendered
         ctx.num_residuals = num_residuals
         ctx.num_buckets = num_buckets
+        ctx.sparse_J = sparse_J
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, opacities, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer)
         return color, radii, invdepths
 
@@ -114,6 +119,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         num_residuals = ctx.num_residuals
         num_buckets = ctx.num_buckets
         raster_settings = ctx.raster_settings
+        sparse_J = ctx.sparse_J
         colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, opacities, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer = ctx.saved_tensors
 
         # print(f"num rendered: {num_rendered}, gaussians: {means3D.size()}, diff {means3D.size(0)-num_rendered}")
@@ -155,13 +161,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum= _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum = _C.rasterize_gaussians_backward(*args)
 
         grads = (
             grad_means3D,
@@ -174,7 +180,15 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_rotations,
             grad_cov3Ds_precomp,
             None,
+            None,
         )
+
+        sparse_J.values = J_values
+        sparse_J.indices = J_indices
+        sparse_J.p_sum = p_sum
+        sparse_J.num_gaussians = means3D.shape[0]
+        sparse_J.num_residuals = raster_settings.image_width * raster_settings.image_height
+        sparse_J.num_entries = num_residuals
 
         return grads
 
@@ -193,10 +207,21 @@ class GaussianRasterizationSettings(NamedTuple):
     debug : bool
     antialiasing : bool
 
+@dataclass
+class SparseJacobianData:
+    values: torch.Tensor
+    indices: torch.Tensor
+    p_sum: torch.Tensor
+    num_gaussians: int
+    num_residuals: int
+    num_entries: int
+
+
 class GaussianRasterizer(nn.Module):
-    def __init__(self, raster_settings):
+    def __init__(self, raster_settings, sparse_jacobian):
         super().__init__()
         self.raster_settings = raster_settings
+        self.sparse_jacobian = sparse_jacobian
         # print("Initialized GaussianRasterizer")
 
     def markVisible(self, positions):
@@ -213,6 +238,7 @@ class GaussianRasterizer(nn.Module):
     def forward(self, means3D, means2D, opacities, dc = None, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
+        sparse_jacobian = self.sparse_jacobian
 
         if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
             raise Exception('Please provide excatly one of either SHs or precomputed colors!')
@@ -245,7 +271,8 @@ class GaussianRasterizer(nn.Module):
             scales, 
             rotations,
             cov3D_precomp,
-            raster_settings
+            raster_settings,
+            sparse_jacobian,
         )
 
 class SparseGaussianAdam(torch.optim.Adam):
@@ -284,8 +311,9 @@ class SparseGaussianAdam(torch.optim.Adam):
 
 # Add Gauss Newton
 class GaussNewton(Optimizer):
-    def __init__(self, params, step_alpha=0.7, step_gamma=1):
-        defaults = dict(step_alpha=step_alpha, step_gamma=step_gamma)
+    def __init__(self, params, step_alpha=0.7, step_gamma=1, sparse_jacobian: SparseJacobianData = None):
+        assert sparse_jacobian is not None
+        defaults = dict(step_alpha=step_alpha, step_gamma=step_gamma, sparse_jacobian=sparse_jacobian )
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
@@ -293,11 +321,12 @@ class GaussNewton(Optimizer):
 
         step_gamma = self.defaults['step_gamma']
         step_alpha = self.defaults['step_alpha']
+        sparse_jacobian = self.defaults['sparse_jacobian']
 
-        # print(f'loss: {loss}')
 
         param_grads = []
-        M = 0
+        N = 0 # number of parameters
+        M = sparse_jacobian.num_residuals # number of residuals 
         for group in self.param_groups:
 
             assert len(group["params"]) == 1, "more than one tensor in group"
@@ -312,28 +341,26 @@ class GaussNewton(Optimizer):
                 state['exp_avg'] = torch.zeros_like(param, memory_format=torch.preserve_format)
                 state['exp_avg_sq'] = torch.zeros_like(param, memory_format=torch.preserve_format)
                 
-            
-            # params.append(param.flatten())
-            # print(f'Opt.step: param: {group["name"]}, size: {param.grad}')
 
-            param_grads.append(param.grad.flatten())
-            M += param.numel()
 
-        if len(param_grads) == 0:
+            # param_grads.append(param.grad.flatten())
+            N += param.numel()
+
+        if N == 0:
             return
 
-        J = torch.cat(param_grads).view(-1, M)
+        # J = torch.cat(param_grads).view(-1, M)
 
-        N = J.shape[1]
-        M = J.shape[0]
-        delta = torch.zeros(N, dtype=torch.float32, device=J.device)
-        x0 = torch.zeros(N, dtype=torch.float32, device=J.device)
+        delta = torch.zeros(N, dtype=torch.float32, device=torch.device('cuda'))
+
+        print(sparse_jacobian)
+        raise Exception("Work in progress")
 
         # print(f'N: {N}, M: {M}')
         # print(f'J size: {J.size()}, device: {J.device}')
         # print(f'delta size: {delta.size()}, device: {delta.device}')
 
-        b = -1.0 * (J.T * loss)
+        # b = -1.0 * (J.T * loss)
 
         # print(f'b size: {b.size()}, device: {b.device}')
 
@@ -343,7 +370,7 @@ class GaussNewton(Optimizer):
 
         # return
 
-        _C.gaussNewtonUpdate(delta, J, b, step_gamma, step_alpha, visibility, N, M)
+        _C.gaussNewtonUpdate(delta, sparse_jacobian.values, sparse_jacobian.indices, sparse_jacobian.p_sum, step_gamma, step_alpha, visibility, N, M, sparse_jacobian.num_entries)
 
         offset = 0
         with torch.no_grad():

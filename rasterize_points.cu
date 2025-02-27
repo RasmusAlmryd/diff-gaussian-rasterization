@@ -25,6 +25,8 @@
 #include <fstream>
 #include <string>
 #include <functional>
+#include <glm/glm.hpp>
+
 
 std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     auto lambda = [&t](size_t N) {
@@ -151,7 +153,7 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -209,7 +211,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   torch::Tensor dr_dxs = torch::zeros({K,num_images}, means3D.options());
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
-  torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kInt32));
+  torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
 
   if(P != 0)
   {  
@@ -251,12 +253,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_drotations.contiguous().data<float>(),
 	  dr_dxs.contiguous().data<float>(),
 	  residual_index.contiguous().data<uint64_t>(),
-	  p_sum.contiguous().data<int>(),
+	  p_sum.contiguous().data<uint32_t>(),
 	  antialiasing,
 	  debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum);
 }
 
 torch::Tensor markVisible(
@@ -308,23 +310,26 @@ void adamUpdate(
 }
 
 void gaussNewtonUpdate(
-	torch::Tensor &x,  
-	torch::Tensor &J,
-	torch::Tensor &b,
-	float gamma,
-	float alpha,
-	torch::Tensor &tiles_touched,
-	const uint32_t N, 
-	const uint32_t M  
+    torch::Tensor &x,   // Is named delta in init.py : Check argument position.
+    torch::Tensor &sparse_J_values,
+    torch::Tensor &sparse_J_indices,
+    torch::Tensor &sparse_J_p_sum,
+    float gamma,
+    float alpha,
+    torch::Tensor &tiles_touched,
+    const uint32_t N, // number of parameters
+    const uint32_t M,  // number of residuals
+    const uint32_t sparse_J_entries
 ){
 	GaussNewton::gaussNewtonUpdate(
 		x.contiguous().data<float>(), 
-		J.contiguous().data<float>(),
-		b.contiguous().data<float>(),
+		sparse_J_values.contiguous().data<float>(),
+		sparse_J_indices.contiguous().data<uint64_t>(),
+		sparse_J_p_sum.contiguous().data<uint32_t>(),
 		gamma,
 		alpha,
 		tiles_touched.contiguous().data<bool>(),
 		N, 
-		M 
-	);
+		M, 
+		sparse_J_entries);
 }
