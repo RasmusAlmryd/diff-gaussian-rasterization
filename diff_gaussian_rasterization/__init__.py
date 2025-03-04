@@ -317,7 +317,7 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, loss):
+    def step(self, visibility, loss_residuals):
 
         step_gamma = self.defaults['step_gamma']
         step_alpha = self.defaults['step_alpha']
@@ -328,7 +328,7 @@ class GaussNewton(Optimizer):
         N = 0 # number of parameters
         M = sparse_jacobian.num_residuals # number of residuals 
         for group in self.param_groups:
-
+            print(f'Opt.step: param: {group["name"]}, size: {group["params"][0].shape}')
             assert len(group["params"]) == 1, "more than one tensor in group"
             param = group["params"][0]
             if param.grad is None:
@@ -353,7 +353,7 @@ class GaussNewton(Optimizer):
 
         delta = torch.zeros(N, dtype=torch.float32, device=torch.device('cuda'))
 
-        print(sparse_jacobian)
+       # print(sparse_jacobian)
         raise Exception("Work in progress")
 
         # print(f'N: {N}, M: {M}')
@@ -370,7 +370,7 @@ class GaussNewton(Optimizer):
 
         # return
 
-        _C.gaussNewtonUpdate(delta, sparse_jacobian.values, sparse_jacobian.indices, sparse_jacobian.p_sum, step_gamma, step_alpha, visibility, N, M, sparse_jacobian.num_entries)
+        _C.gaussNewtonUpdate(delta, sparse_jacobian.values, sparse_jacobian.indices, sparse_jacobian.p_sum, loss_residuals, step_gamma, step_alpha, visibility, N, M, sparse_jacobian.num_entries)
 
         offset = 0
         with torch.no_grad():
