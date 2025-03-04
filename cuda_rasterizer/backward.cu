@@ -691,13 +691,15 @@ PerGaussianRenderCUDA(
 			// 	printf("pixel offset %d, range [%d, %d], pix_id: %d \n", pixel_offset, global_gaussian_offset, global_gaussian_offset_end, pix_id);
 			// }
 
-			if (pixel_offset >= global_gaussian_offset_end) {
+			//if (pixel_offset >= global_gaussian_offset_end) {
 				// if(splat_idx_global == 250){
 				// 	printf("BREAK :: pixel offset %d, range [%d, %d], pix_id: %d \n", pixel_offset, global_gaussian_offset, global_gaussian_offset_end, pix_id);
 				// }
-				break;
-			}
-			atomicAdd(&dr_dxs[pixel_offset-1], dL_dG); 
+			//	break;
+			//}
+			//atomicAdd(&dr_dxs[pixel_offset-1], dL_dG); 
+			atomicAdd(&dr_dxs[gaussian_idx + pix_id * P ], dL_dG); 
+
 
 			// if(pixel_offset == 0) {
 			// 	// printf("\n");

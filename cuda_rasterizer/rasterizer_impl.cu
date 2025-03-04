@@ -753,14 +753,14 @@ void CudaRasterizer::Rasterizer::backward(
 		dr_dxs, 
 		residual_index), debug)
 
-	float test;
-	int test_index;
-	for (int i = 0; i < 400; i+=1){
-	 	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
-		CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// float test;
+	// int test_index;
+	// for (int i = 0; i < 5000; i+=1){
+	//  	CHECK_CUDA(cudaMemcpy(&test, &dr_dxs[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+	// 	CHECK_CUDA(cudaMemcpy(&test_index, &residual_index[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	 	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
-	}
+	//  	printf("Sparse dr_dxs content #%d: in index [%d] %g\n",i, test_index, test);
+	// }
 
 
 
@@ -772,27 +772,27 @@ void CudaRasterizer::Rasterizer::backward(
 	// 	num_rendered, 0, 32 + bit), debug);
 
 	// int bit = getHigherMsb(P*width*height);
-	printf("----------------------------------------------------------------\n");
-	printf("SORTED: \n");
+	//printf("----------------------------------------------------------------\n");
+	//printf("SORTED: \n");
 
 
-	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
-		residualState.sorting_space,
-		residualState.sorting_size,
-		residual_index, residualState.list_keys_temp,
-		dr_dxs, residualState.list_values_temp,
-		K), debug);
+	//CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+	//	residualState.sorting_space,
+	//	residualState.sorting_size,
+	//	residual_index, residualState.list_keys_temp,
+	//	dr_dxs, residualState.list_values_temp,
+	//	K), debug);
 	
-	printf("done sorting");
+	//printf("done sorting");
 
 
 
-	for (int i = 0; i < 400; i+=1){
-		CHECK_CUDA(cudaMemcpy(&test, &residualState.list_values_temp[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
-		CHECK_CUDA(cudaMemcpy(&test_index, &residualState.list_keys_temp[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// for (int i = 0; i < 400; i+=1){
+	// 	CHECK_CUDA(cudaMemcpy(&test, &residualState.list_values_temp[i], sizeof(float), cudaMemcpyDeviceToHost), debug);
+	// 	CHECK_CUDA(cudaMemcpy(&test_index, &residualState.list_keys_temp[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-		printf("Sparse dr_dxs content #%d: in index [%d] (pix_id: %d, gauss_id: %d)   : %g,   \n",i, test_index, (test_index / P), (test_index % P), test);
-	}
+	// 	printf("Sparse dr_dxs content #%d: in index [%d] (pix_id: %d, gauss_id: %d)   : %g,   \n",i, test_index, (test_index / P), (test_index % P), test);
+	// }
 
 
 	// throw std::invalid_argument("temp exception.. REMOVE");

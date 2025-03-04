@@ -95,6 +95,7 @@ void gaussNewtonUpdate(
     torch::Tensor &sparse_J_values,
     torch::Tensor &sparse_J_indices,
     torch::Tensor &sparse_J_p_sum,
+	torch::Tensor &loss_residuals,
     float gamma,
     float alpha,
     torch::Tensor &tiles_touched,

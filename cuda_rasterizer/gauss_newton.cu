@@ -6,6 +6,197 @@ namespace cg = cooperative_groups;
 
 #define THREADS_PER_BLOCK 256
 
+// // Backward pass for conversion of spherical harmonics to RGB for
+// // each Gaussian.
+// __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* dc, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_ddc, glm::vec3* dL_dshs)
+// {
+// 	// Compute intermediate values, as it is done during forward
+// 	glm::vec3 pos = means[idx];
+// 	glm::vec3 dir_orig = pos - campos;
+// 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
+
+// 	glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
+// 	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+
+// 	// Use PyTorch rule for clamping: if clamping was applied,
+// 	// gradient becomes 0.
+// 	glm::vec3 dL_dRGB = dL_dcolor[idx];
+// 	dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
+// 	dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
+// 	dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+
+// 	glm::vec3 dRGBdx(0, 0, 0);
+// 	glm::vec3 dRGBdy(0, 0, 0);
+// 	glm::vec3 dRGBdz(0, 0, 0);
+// 	float x = dir.x;
+// 	float y = dir.y;
+// 	float z = dir.z;
+
+// 	// Target location for this Gaussian to write SH gradients to
+// 	glm::vec3* dL_ddirect_color = dL_ddc + idx;
+// 	glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
+
+// 	// No tricks here, just high school-level calculus.
+// 	float dRGBdsh0 = SH_C0;
+// 	dL_ddirect_color[0] = dRGBdsh0 * dL_dRGB;
+// 	if (deg > 0)
+// 	{
+// 		float dRGBdsh1 = -SH_C1 * y;
+// 		float dRGBdsh2 = SH_C1 * z;
+// 		float dRGBdsh3 = -SH_C1 * x;
+// 		dL_dsh[0] = dRGBdsh1 * dL_dRGB;
+// 		dL_dsh[1] = dRGBdsh2 * dL_dRGB;
+// 		dL_dsh[2] = dRGBdsh3 * dL_dRGB;
+
+// 		dRGBdx = -SH_C1 * sh[2];
+// 		dRGBdy = -SH_C1 * sh[0];
+// 		dRGBdz = SH_C1 * sh[1];
+
+// 		if (deg > 1)
+// 		{
+// 			float xx = x * x, yy = y * y, zz = z * z;
+// 			float xy = x * y, yz = y * z, xz = x * z;
+
+// 			float dRGBdsh4 = SH_C2[0] * xy;
+// 			float dRGBdsh5 = SH_C2[1] * yz;
+// 			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
+// 			float dRGBdsh7 = SH_C2[3] * xz;
+// 			float dRGBdsh8 = SH_C2[4] * (xx - yy);
+// 			dL_dsh[3] = dRGBdsh4 * dL_dRGB;
+// 			dL_dsh[4] = dRGBdsh5 * dL_dRGB;
+// 			dL_dsh[5] = dRGBdsh6 * dL_dRGB;
+// 			dL_dsh[6] = dRGBdsh7 * dL_dRGB;
+// 			dL_dsh[7] = dRGBdsh8 * dL_dRGB;
+
+// 			dRGBdx += SH_C2[0] * y * sh[3] + SH_C2[2] * 2.f * -x * sh[5] + SH_C2[3] * z * sh[6] + SH_C2[4] * 2.f * x * sh[7];
+// 			dRGBdy += SH_C2[0] * x * sh[3] + SH_C2[1] * z * sh[4] + SH_C2[2] * 2.f * -y * sh[5] + SH_C2[4] * 2.f * -y * sh[7];
+// 			dRGBdz += SH_C2[1] * y * sh[4] + SH_C2[2] * 2.f * 2.f * z * sh[5] + SH_C2[3] * x * sh[6];
+
+// 			if (deg > 2)
+// 			{
+// 				float dRGBdsh9 = SH_C3[0] * y * (3.f * xx - yy);
+// 				float dRGBdsh10 = SH_C3[1] * xy * z;
+// 				float dRGBdsh11 = SH_C3[2] * y * (4.f * zz - xx - yy);
+// 				float dRGBdsh12 = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy);
+// 				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
+// 				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
+// 				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
+// 				dL_dsh[8] = dRGBdsh9 * dL_dRGB;
+// 				dL_dsh[9] = dRGBdsh10 * dL_dRGB;
+// 				dL_dsh[10] = dRGBdsh11 * dL_dRGB;
+// 				dL_dsh[11] = dRGBdsh12 * dL_dRGB;
+// 				dL_dsh[12] = dRGBdsh13 * dL_dRGB;
+// 				dL_dsh[13] = dRGBdsh14 * dL_dRGB;
+// 				dL_dsh[14] = dRGBdsh15 * dL_dRGB;
+
+// 				dRGBdx += (
+// 					SH_C3[0] * sh[8] * 3.f * 2.f * xy +
+// 					SH_C3[1] * sh[9] * yz +
+// 					SH_C3[2] * sh[10] * -2.f * xy +
+// 					SH_C3[3] * sh[11] * -3.f * 2.f * xz +
+// 					SH_C3[4] * sh[12] * (-3.f * xx + 4.f * zz - yy) +
+// 					SH_C3[5] * sh[13] * 2.f * xz +
+// 					SH_C3[6] * sh[14] * 3.f * (xx - yy));
+
+// 				dRGBdy += (
+// 					SH_C3[0] * sh[8] * 3.f * (xx - yy) +
+// 					SH_C3[1] * sh[9] * xz +
+// 					SH_C3[2] * sh[10] * (-3.f * yy + 4.f * zz - xx) +
+// 					SH_C3[3] * sh[11] * -3.f * 2.f * yz +
+// 					SH_C3[4] * sh[12] * -2.f * xy +
+// 					SH_C3[5] * sh[13] * -2.f * yz +
+// 					SH_C3[6] * sh[14] * -3.f * 2.f * xy);
+
+// 				dRGBdz += (
+// 					SH_C3[1] * sh[9] * xy +
+// 					SH_C3[2] * sh[10] * 4.f * 2.f * yz +
+// 					SH_C3[3] * sh[11] * 3.f * (2.f * zz - xx - yy) +
+// 					SH_C3[4] * sh[12] * 4.f * 2.f * xz +
+// 					SH_C3[5] * sh[13] * (xx - yy));
+// 			}
+// 		}
+// 	}
+
+// 	// The view direction is an input to the computation. View direction
+// 	// is influenced by the Gaussian's mean, so SHs gradients
+// 	// must propagate back into 3D position.
+// 	glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB), glm::dot(dRGBdz, dL_dRGB));
+
+// 	// Account for normalization of direction
+// 	float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
+
+// 	// Gradients of loss w.r.t. Gaussian means, but only the portion 
+// 	// that is caused because the mean affects the view-dependent color.
+// 	// Additional mean gradient is accumulated in below methods.
+// 	dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
+// }
+
+// // Backward pass for the conversion of scale and rotation to a 
+// // 3D covariance matrix for each Gaussian. 
+// __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const float* dL_dcov3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
+// {
+// 	// Recompute (intermediate) results for the 3D covariance computation.
+// 	glm::vec4 q = rot;// / glm::length(rot);
+// 	float r = q.x;
+// 	float x = q.y;
+// 	float y = q.z;
+// 	float z = q.w;
+
+// 	glm::mat3 R = glm::mat3(
+// 		1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
+// 		2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+// 		2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
+// 	);
+
+// 	glm::mat3 S = glm::mat3(1.0f);
+
+// 	glm::vec3 s = mod * scale;
+// 	S[0][0] = s.x;
+// 	S[1][1] = s.y;
+// 	S[2][2] = s.z;
+
+// 	glm::mat3 M = S * R;
+
+// 	const float* dL_dcov3D = dL_dcov3Ds + 6 * idx;
+
+// 	glm::vec3 dunc(dL_dcov3D[0], dL_dcov3D[3], dL_dcov3D[5]);
+// 	glm::vec3 ounc = 0.5f * glm::vec3(dL_dcov3D[1], dL_dcov3D[2], dL_dcov3D[4]);
+
+// 	// Convert per-element covariance loss gradients to matrix form
+// 	glm::mat3 dL_dSigma = glm::mat3(
+// 		dL_dcov3D[0], 0.5f * dL_dcov3D[1], 0.5f * dL_dcov3D[2],
+// 		0.5f * dL_dcov3D[1], dL_dcov3D[3], 0.5f * dL_dcov3D[4],
+// 		0.5f * dL_dcov3D[2], 0.5f * dL_dcov3D[4], dL_dcov3D[5]
+// 	);
+
+// 	// Compute loss gradient w.r.t. matrix M
+// 	// dSigma_dM = 2 * M
+// 	glm::mat3 dL_dM = 2.0f * M * dL_dSigma;
+
+// 	glm::mat3 Rt = glm::transpose(R);
+// 	glm::mat3 dL_dMt = glm::transpose(dL_dM);
+
+// 	// Gradients of loss w.r.t. scale
+// 	glm::vec3* dL_dscale = dL_dscales + idx;
+// 	dL_dscale->x = glm::dot(Rt[0], dL_dMt[0]);
+// 	dL_dscale->y = glm::dot(Rt[1], dL_dMt[1]);
+// 	dL_dscale->z = glm::dot(Rt[2], dL_dMt[2]);
+
+// 	dL_dMt[0] *= s.x;
+// 	dL_dMt[1] *= s.y;
+// 	dL_dMt[2] *= s.z;
+
+// 	// Gradients of loss w.r.t. normalized quaternion
+// 	glm::vec4 dL_dq;
+// 	dL_dq.x = 2 * z * (dL_dMt[0][1] - dL_dMt[1][0]) + 2 * y * (dL_dMt[2][0] - dL_dMt[0][2]) + 2 * x * (dL_dMt[1][2] - dL_dMt[2][1]);
+// 	dL_dq.y = 2 * y * (dL_dMt[1][0] + dL_dMt[0][1]) + 2 * z * (dL_dMt[2][0] + dL_dMt[0][2]) + 2 * r * (dL_dMt[1][2] - dL_dMt[2][1]) - 4 * x * (dL_dMt[2][2] + dL_dMt[1][1]);
+// 	dL_dq.z = 2 * x * (dL_dMt[1][0] + dL_dMt[0][1]) + 2 * r * (dL_dMt[2][0] - dL_dMt[0][2]) + 2 * z * (dL_dMt[1][2] + dL_dMt[2][1]) - 4 * y * (dL_dMt[2][2] + dL_dMt[0][0]);
+// 	dL_dq.w = 2 * r * (dL_dMt[0][1] - dL_dMt[1][0]) + 2 * x * (dL_dMt[2][0] + dL_dMt[0][2]) + 2 * y * (dL_dMt[1][2] + dL_dMt[2][1]) - 4 * z * (dL_dMt[1][1] + dL_dMt[0][0]);
+
+// 	// Gradients of loss w.r.t. unnormalized quaternion
+// 	float4* dL_drot = (float4*)(dL_drots + idx);
+// 	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
+// }
 
 __global__
 void createJ(){
@@ -181,13 +372,24 @@ void JTv(float* out_JTv, float* sparse_J, uint64_t* indices, float* v, uint32_t 
     atomicAdd(&out_JTv[gaussian_id], result);
 }
 
+__global__
+void calc_b_non_sparse(float* b, float* J, float* loss_residuals, uint32_t N, uint32_t M){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N*M) return;
+    uint32_t x = idx % N;
+    uint32_t y = idx / N;
+    float dr_dG = J[x + y * N];
+    glm::vec3 dr_dmean;
 
+
+}
 
 void GaussNewton::gaussNewtonUpdate(
     float* x,   // Is named delta in init.py : Check argument position.
     float* sparse_J_values,
     uint64_t* sparse_J_indices,
     uint32_t* sparse_J_p_sum,
+    float* loss_residuals,
     float gamma,
     float alpha,
     const bool* tiles_touched,
@@ -202,9 +404,13 @@ void GaussNewton::gaussNewtonUpdate(
     // TODO: create Ap, following perf or levenberg
     // TODO: allow multiple images (stack sparse jacobians)
 
-    // b = JTv (v = r) = JTr
+    //Calculate residuals wrt parameters
+    
+    // b = JTv (v = r) = JTr, b=-JTr
 
-    /*
+
+    float* J = sparse_J_values;
+    float* b = x;
     // r(0) = b
     float* dev_r;
     cudaMalloc(&dev_r, N * sizeof(float));
@@ -352,7 +558,7 @@ void GaussNewton::gaussNewtonUpdate(
     cudaFree(dev_z);
     cudaFree(M_precon);
     cudaFree(dev_r);
-    */
+
 
 }
 

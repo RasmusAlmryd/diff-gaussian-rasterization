@@ -15,6 +15,7 @@ namespace GaussNewton {
         float* sparse_J_values,
         uint64_t* sparse_J_indices,
         uint32_t* sparse_J_p_sum,
+        float* loss_residuals,
         float gamma,
         float alpha,
         const bool* tiles_touched,

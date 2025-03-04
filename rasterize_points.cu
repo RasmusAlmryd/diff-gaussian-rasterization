@@ -209,7 +209,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   int num_images = 1;
 
-  torch::Tensor dr_dxs = torch::zeros({K,num_images}, means3D.options());
+  torch::Tensor dr_dxs = torch::zeros({P, H, W ,num_images}, means3D.options());
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
 
@@ -314,6 +314,7 @@ void gaussNewtonUpdate(
     torch::Tensor &sparse_J_values,
     torch::Tensor &sparse_J_indices,
     torch::Tensor &sparse_J_p_sum,
+	torch::Tensor &loss_residuals,
     float gamma,
     float alpha,
     torch::Tensor &tiles_touched,
@@ -326,6 +327,7 @@ void gaussNewtonUpdate(
 		sparse_J_values.contiguous().data<float>(),
 		sparse_J_indices.contiguous().data<uint64_t>(),
 		sparse_J_p_sum.contiguous().data<uint32_t>(),
+		loss_residuals.contiguous().data<float>(),
 		gamma,
 		alpha,
 		tiles_touched.contiguous().data<bool>(),
