@@ -56,6 +56,7 @@ namespace CudaRasterizer
 			float* depth,
 			bool antialiasing,
 			int* radii = nullptr,
+			bool* clamped = nullptr,
 			bool debug = false);
 
 		static void backward(
@@ -97,6 +98,7 @@ namespace CudaRasterizer
 			float* dr_dxs,
 			uint64_t* residual_index,
 			uint32_t* p_sum,
+			float* cov3D,
 			bool antialiasing,
 			bool debug);
 	};

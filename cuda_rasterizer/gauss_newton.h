@@ -11,6 +11,25 @@
 namespace GaussNewton {
 
     void gaussNewtonUpdate(
+        int P, int D, int max_coeffs, // max_coeffs = M
+        const float* means3D,
+	    const int* radii,
+	    const float* dc,
+	    const float* shs,
+	    const bool* clamped,
+	    const float* opacities,
+	    const float* scales,
+	    const float* rotations,
+	    const float scale_modifier,
+	    const float* cov3Ds,
+	    const float* viewmatrix,
+	    const float* projmatrix,
+	    const float focal_x, float focal_y,
+	    const float tan_fovx, float tan_fovy,
+        const float* campos,
+        bool antialiasing,
+
+
         float* x,   // Is named delta in init.py : Check argument position.
         float* sparse_J_values,
         uint64_t* sparse_J_indices,
@@ -22,7 +41,7 @@ namespace GaussNewton {
         const uint32_t N, // number of parameters
         const uint32_t M,  // number of residuals
         const uint32_t sparse_J_entries
-        );
+    );
 
     
 }

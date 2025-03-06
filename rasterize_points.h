@@ -14,8 +14,9 @@
 #include <cstdio>
 #include <tuple>
 #include <string>
+
 	
-std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -39,7 +40,7 @@ RasterizeGaussiansCUDA(
 	const bool antialiasing,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -91,6 +92,26 @@ void adamUpdate(
 );
 
 void gaussNewtonUpdate(
+
+	int P, int D, int max_coeffs, // max_coeffs = M
+	const torch::Tensor &means3D,
+	const torch::Tensor &radii,
+	const torch::Tensor &dc,
+	const torch::Tensor &shs,
+	const torch::Tensor &clamped,
+	const torch::Tensor &opacities,
+	const torch::Tensor &scales,
+	const torch::Tensor &rotations,
+	const float scale_modifier,
+	const torch::Tensor cov3Ds,
+	const torch::Tensor& viewmatrix,
+    const torch::Tensor& projmatrix,
+	const float focal_x, float focal_y,
+	const float tan_fovx, float tan_fovy,
+	const torch::Tensor &campos,
+    bool antialiasing,
+
+    
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
     torch::Tensor &sparse_J_values,
     torch::Tensor &sparse_J_indices,

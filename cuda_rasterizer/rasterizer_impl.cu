@@ -440,6 +440,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	float* invdepth,
 	bool antialiasing,
 	int* radii,
+	bool* clamped,
 	bool debug)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
@@ -496,6 +497,9 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		prefiltered,
 		antialiasing
 	), debug)
+
+	// store clamped values for use in gauss_newton optimizer
+	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
@@ -686,6 +690,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dr_dxs,
 	uint64_t* residual_index,
 	uint32_t* p_sum, 
+	float* cov3D,
 	bool antialiasing,
 	bool debug)
 {
@@ -801,6 +806,10 @@ void CudaRasterizer::Rasterizer::backward(
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
+
+	// store clamped values for use in gauss_newton optimizer
+	CHECK_CUDA(cudaMemcpy(cov3D, cov3D_ptr, P * 6 * sizeof(float), cudaMemcpyDeviceToDevice), debug);
+
 	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
 		(float3*)means3D,
 		radii,

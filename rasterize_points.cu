@@ -9,6 +9,8 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
+
+
 #include <math.h>
 #include <torch/extension.h>
 #include <cstdio>
@@ -25,6 +27,7 @@
 #include <fstream>
 #include <string>
 #include <functional>
+#define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
 
@@ -52,7 +55,7 @@ std::function<float*(size_t N)> resizeFloatFunctional(torch::Tensor& t) {
     return lambda;
 }
 
-std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -91,6 +94,7 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS_3DGS, H, W}, 0.0, float_opts);
   torch::Tensor out_invdepth = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  torch::Tensor clamped = torch::full({P, 3}, 0, means3D.options().dtype(at::kBool));
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -144,16 +148,17 @@ RasterizeGaussiansCUDA(
 		out_invdepth.contiguous().data<float>(),
 		antialiasing,
 		radii.contiguous().data<int>(),
+		clamped.contiguous().data<bool>(),
 		debug);
 		
 		rendered = std::get<0>(tup);
 		num_residuals = std::get<1>(tup);
 		num_buckets = std::get<2>(tup);
   }
-  return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
+  return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, clamped, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -212,6 +217,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dr_dxs = torch::zeros({P, H, W ,num_images}, means3D.options());
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
+  torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());
 
   if(P != 0)
   {  
@@ -254,11 +260,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dr_dxs.contiguous().data<float>(),
 	  residual_index.contiguous().data<uint64_t>(),
 	  p_sum.contiguous().data<uint32_t>(),
+	  cov3D.contiguous().data<float>(),
 	  antialiasing,
 	  debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum, cov3D);
 }
 
 torch::Tensor markVisible(
@@ -310,6 +317,24 @@ void adamUpdate(
 }
 
 void gaussNewtonUpdate(
+	int P, int D, int max_coeffs, // max_coeffs = M
+	const torch::Tensor &means3D,
+	const torch::Tensor &radii,
+	const torch::Tensor &dc,
+	const torch::Tensor &shs,
+	const torch::Tensor &clamped,
+	const torch::Tensor &opacities,
+	const torch::Tensor &scales,
+	const torch::Tensor &rotations,
+	const float scale_modifier,
+	const torch::Tensor cov3Ds,
+	const torch::Tensor& viewmatrix,
+    const torch::Tensor& projmatrix,
+	const float focal_x, float focal_y,
+	const float tan_fovx, float tan_fovy,
+	const torch::Tensor &campos,
+    bool antialiasing,
+
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
     torch::Tensor &sparse_J_values,
     torch::Tensor &sparse_J_indices,
@@ -323,6 +348,24 @@ void gaussNewtonUpdate(
     const uint32_t sparse_J_entries
 ){
 	GaussNewton::gaussNewtonUpdate(
+		P, D, max_coeffs, // max_coeffs = M
+		means3D.contiguous().data<float>(),
+		radii.contiguous().data<int>(),
+		dc.contiguous().data<float>(),
+		shs.contiguous().data<float>(),
+		clamped.contiguous().data<bool>(),
+		opacities.contiguous().data<float>(),
+		scales.contiguous().data<float>(),
+		rotations.contiguous().data<float>(),
+		scale_modifier,
+		cov3Ds.contiguous().data<float>(),
+		viewmatrix.contiguous().data<float>(),
+		projmatrix.contiguous().data<float>(),
+		focal_x, focal_y,
+		tan_fovx, tan_fovy,
+		campos.contiguous().data<float>(),
+		antialiasing,
+
 		x.contiguous().data<float>(), 
 		sparse_J_values.contiguous().data<float>(),
 		sparse_J_indices.contiguous().data<uint64_t>(),
