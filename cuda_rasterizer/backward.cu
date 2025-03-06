@@ -15,7 +15,7 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
-__device__ __forceinline__ float sq(float x) { return x * x; }
+//__device__ __forceinline__ float sq(float x) { return x * x; }
 
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -624,10 +624,12 @@ PerGaussianRenderCUDA(
 			// add the gradient contribution of this pixel's colour to the gaussian
 			float bg_dot_dpixel = 0.0f;
 			float dL_dalpha = 0.0f;
+			float dL_dcolortemp[C] = {0.0f};
 			for (int ch = 0; ch < C; ++ch) {
 				ar[ch] += weight * c[ch]; // TODO: check
 				const float &dL_dchannel = dL_dpixel[ch];
 				Register_dL_dcolors[ch] += weight * dL_dchannel;
+				dL_dcolortemp[ch] = weight * dL_dchannel;
 				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
 				
 				bg_dot_dpixel += bg_color[ch] * dL_dpixel[ch];
@@ -698,8 +700,19 @@ PerGaussianRenderCUDA(
 			//	break;
 			//}
 			//atomicAdd(&dr_dxs[pixel_offset-1], dL_dG); 
-			atomicAdd(&dr_dxs[gaussian_idx + pix_id * P ], dL_dG); 
+			//atomicAdd(&dr_dxs[gaussian_idx + pix_id * P ], dL_dG); 
 
+			int index= gaussian_idx + pix_id * P;
+			atomicAdd(&dr_dxs[index*10 + 0], tmp_x);
+			atomicAdd(&dr_dxs[index*10 + 1], tmp_y);
+			atomicAdd(&dr_dxs[index*10 + 2], -0.5f * gdx * d.x * dL_dG);
+			atomicAdd(&dr_dxs[index*10 + 3], -0.5f * gdx * d.y * dL_dG);
+			atomicAdd(&dr_dxs[index*10 + 4], -0.5f * gdy * d.y * dL_dG);
+			atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
+			for (int ch = 0; ch < C; ++ch) {
+				atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
+			}
+			atomicAdd(&dr_dxs[index*10 + 9], weight * dL_invdepth);
 
 			// if(pixel_offset == 0) {
 			// 	// printf("\n");

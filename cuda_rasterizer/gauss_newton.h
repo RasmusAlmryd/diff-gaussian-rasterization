@@ -11,7 +11,7 @@
 namespace GaussNewton {
 
     void gaussNewtonUpdate(
-        int P, int D, int max_coeffs, // max_coeffs = M
+        int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
         const float* means3D,
 	    const int* radii,
 	    const float* dc,
@@ -24,7 +24,6 @@ namespace GaussNewton {
 	    const float* cov3Ds,
 	    const float* viewmatrix,
 	    const float* projmatrix,
-	    const float focal_x, float focal_y,
 	    const float tan_fovx, float tan_fovy,
         const float* campos,
         bool antialiasing,

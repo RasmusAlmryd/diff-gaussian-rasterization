@@ -93,7 +93,7 @@ void adamUpdate(
 
 void gaussNewtonUpdate(
 
-	int P, int D, int max_coeffs, // max_coeffs = M
+	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
 	const torch::Tensor &means3D,
 	const torch::Tensor &radii,
 	const torch::Tensor &dc,
@@ -106,7 +106,6 @@ void gaussNewtonUpdate(
 	const torch::Tensor cov3Ds,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
-	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,

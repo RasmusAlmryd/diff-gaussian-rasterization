@@ -367,7 +367,9 @@ class GaussNewton(Optimizer):
         # J = torch.cat(param_grads).view(-1, M)
 
         delta = torch.zeros(N, dtype=torch.float32, device=torch.device('cuda'))
-
+        #print("Sparse J values: ", sparse_jacobian.values)
+        #raise Exception("Work in progress")
+    
         # print(sparse_jacobian)
         # print(sparse_jacobian.cov3D)
         # print(sparse_jacobian.clamped.view(-1).sum())
@@ -394,10 +396,12 @@ class GaussNewton(Optimizer):
 
         P = means3D.size(0)
         D = sparse_jacobian.raster_settings.sh_degree
+        width = sparse_jacobian.raster_settings.image_width
+        height = sparse_jacobian.raster_settings.image_height
         # print(P, D, max_coeffs)
-
+        
         _C.gaussNewtonUpdate(
-            P, D, max_coeffs, # max_coeffs = M
+            P, D, max_coeffs, width, height, # max_coeffs = M
             means3D,
             radii,
             f_dc,
@@ -410,10 +414,8 @@ class GaussNewton(Optimizer):
             sparse_jacobian.cov3D,
             sparse_jacobian.raster_settings.viewmatrix,
             sparse_jacobian.raster_settings.projmatrix,
-            sparse_jacobian.raster_settings.focal_x,  
-            sparse_jacobian.raster_settings.focal_y,
-            sparse_jacobian.raster_settings.tan_fovx, 
-            sparse_jacobian.raster_settings.tan_fovy,
+            sparse_jacobian.raster_settings.tanfovx, 
+            sparse_jacobian.raster_settings.tanfovy,
             sparse_jacobian.raster_settings.campos, 
             sparse_jacobian.raster_settings.antialiasing,
 

@@ -214,7 +214,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   int num_images = 1;
 
-  torch::Tensor dr_dxs = torch::zeros({P, H, W ,num_images}, means3D.options());
+  torch::Tensor dr_dxs = torch::zeros({P, H, W , 10, num_images}, means3D.options());
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
   torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());
@@ -317,7 +317,7 @@ void adamUpdate(
 }
 
 void gaussNewtonUpdate(
-	int P, int D, int max_coeffs, // max_coeffs = M
+	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
 	const torch::Tensor &means3D,
 	const torch::Tensor &radii,
 	const torch::Tensor &dc,
@@ -330,7 +330,6 @@ void gaussNewtonUpdate(
 	const torch::Tensor cov3Ds,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
-	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
@@ -348,7 +347,7 @@ void gaussNewtonUpdate(
     const uint32_t sparse_J_entries
 ){
 	GaussNewton::gaussNewtonUpdate(
-		P, D, max_coeffs, // max_coeffs = M
+		P, D, max_coeffs, width, height, // max_coeffs = M
 		means3D.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
 		dc.contiguous().data<float>(),
@@ -361,7 +360,6 @@ void gaussNewtonUpdate(
 		cov3Ds.contiguous().data<float>(),
 		viewmatrix.contiguous().data<float>(),
 		projmatrix.contiguous().data<float>(),
-		focal_x, focal_y,
 		tan_fovx, tan_fovy,
 		campos.contiguous().data<float>(),
 		antialiasing,
