@@ -711,7 +711,13 @@ PerGaussianRenderCUDA(
 			atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
 			for (int ch = 0; ch < C; ++ch) {
 				atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
+				// if(gaussian_idx == 0){
+				// 	printf("dl_dcolor[%d]: %g (%g), ", ch, dL_dcolortemp[ch], dL_dpixel[ch]);
+				// }
 			}
+			// if(gaussian_idx == 0){
+			// 	printf("\n");
+			// }
 			atomicAdd(&dr_dxs[index*10 + 9], weight * dL_invdepth);
 
 			// if(pixel_offset == 0) {

@@ -611,7 +611,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	
 	int num_residuals;
 	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	printf("num_residuals: %d \n", num_residuals);
+	// printf("num_residuals: %d \n", num_residuals);
 	// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
 	
 	
@@ -701,7 +701,7 @@ void CudaRasterizer::Rasterizer::backward(
 	ResidualState residualState = ResidualState::fromChunk(residual_buffer, K);
 
 
-	printf("num residuals: %d\n", K);   //Useful prints for debugging
+	// printf("num residuals: %d\n", K);   //Useful prints for debugging
 	// printf("num residuals/num gaussians: %f\n", (float)K / (float)R);
 
 

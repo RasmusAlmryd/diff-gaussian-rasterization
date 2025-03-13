@@ -9,12 +9,16 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+# import os
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 from typing import NamedTuple
 import torch.nn as nn
 import torch
 from . import _C
 from torch.optim.optimizer import Optimizer
 from dataclasses import dataclass
+# from scene import GaussianModel
 
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
@@ -304,11 +308,17 @@ class SparseGaussianAdam(torch.optim.Adam):
                 state['exp_avg_sq'] = torch.zeros_like(param, memory_format=torch.preserve_format)
 
 
+
             stored_state = self.state.get(param, None)
             exp_avg = stored_state["exp_avg"]
             exp_avg_sq = stored_state["exp_avg_sq"]
             M = param.numel() // N
-            print(f'Opt.step: param: {group["name"]}, size: {param.grad}')
+            # print(f'Opt.step: param: {group["name"]}, size: {param.grad}')
+            # if (group['name'] == 'f_dc'):
+            #     print(param)
+
+            if (group['name'] == 'rotation'):
+                print(param)
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
 
@@ -323,19 +333,45 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, loss_residuals, radii):
+    def step(self, visibility, loss_residuals, radii, gaussian_model):
 
         step_gamma = self.defaults['step_gamma']
         step_alpha = self.defaults['step_alpha']
         sparse_jacobian = self.defaults['sparse_jacobian']
 
 
-        means3D = self.find_parameter_group('xyz')['params'][0]
-        scales  = self.find_parameter_group('scaling')['params'][0]
-        rotations = self.find_parameter_group('rotation')['params'][0]
-        opacities = self.find_parameter_group('opacity')['params'][0]
-        f_dc = self.find_parameter_group('f_dc')['params'][0]
-        f_rest = self.find_parameter_group('f_rest')['params'][0]
+        means3D_group = self.find_parameter_group('xyz')
+        scales_group  = self.find_parameter_group('scaling')
+        rotations_group = self.find_parameter_group('rotation')
+        opacities_group = self.find_parameter_group('opacity')
+        f_dc_group = self.find_parameter_group('f_dc')
+        f_rest_group = self.find_parameter_group('f_rest')
+
+        means3D = means3D_group['params'][0]
+        scales  = torch.exp(scales_group['params'][0].detach())
+        # rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
+        rotations = rotations_group['params'][0].detach()
+        opacities = torch.sigmoid(opacities_group['params'][0].detach())
+        f_dc = f_dc_group['params'][0]
+        f_rest = f_rest_group['params'][0]
+
+        # print(rotations)
+        # print(gaussian_model._rotation)
+        # print(gaussian_model.get_rotation)
+
+        # raise Exception('heeheh')
+
+        # means3D = gaussian_model.get_xyz
+        # scales  = gaussian_model.get_scaling
+        # rotations = gaussian_model.get_rotation
+        # opacities = gaussian_model.get_opacity
+        # f_dc = gaussian_model.get_features_dc
+        # f_rest = gaussian_model.get_features_rest
+
+        # print(scales)
+
+        
+
         print('means3D: ', means3D.shape ,'\n scales: ', scales.shape ,'\n rotation: ', rotations.shape ,'\n opacity: ', opacities.shape ,'\n f_dc: ', f_dc.shape ,'\n f_rest: ', f_rest.shape)
 
 
@@ -390,6 +426,14 @@ class GaussNewton(Optimizer):
 
         # return
 
+        # test params
+
+        # print(visibility)
+        # if(not visibility.any()):
+        #     print('no gaussian visible')
+        #     return
+
+
         max_coeffs= 0
         if(f_rest.size(0) != 0):
             max_coeffs = f_rest.size(1)
@@ -398,6 +442,8 @@ class GaussNewton(Optimizer):
         D = sparse_jacobian.raster_settings.sh_degree
         width = sparse_jacobian.raster_settings.image_width
         height = sparse_jacobian.raster_settings.image_height
+
+        # print(sparse_jacobian.values)
         # print(P, D, max_coeffs)
         
         _C.gaussNewtonUpdate(
@@ -430,23 +476,108 @@ class GaussNewton(Optimizer):
             N, 
             M, 
             sparse_jacobian.num_entries)
+
+
+        # num_params_per_gaussian = 59
+        # num_gaussians = P
+        # print(P)
+
+        # r = torch.rand((num_gaussians, 15, 3))
+        # # r = torch.rand((num_gaussians, 3))
+
+        # delta = [i for i in range(num_params_per_gaussian*num_gaussians)]
+        # delta = torch.tensor([delta], device=torch.device('cuda'))
+        # print(delta)
         
-        raise Exception("Work in progress")
+        # delta = delta.view(num_gaussians,59)
+
+        # print(delta.shape)
+        # print(delta)
+
+        # delta = delta.T
+        # print(delta)
+        # print(delta.reshape(-1)[0:r.numel()].view(-1, num_gaussians).T.view(r.shape))
+
+        # torch.cuda.synchronize()
+        # delta = delta.cpu()
+        # print(torch.nonzero(delta))
+        # print(delta)
+
+        delta = delta.view(P,59)
+        delta = delta.T
+        # delta = delta.contiguous()
+        # print(delta.shape)
+        # print(delta.shape, delta.dtype, delta.is_contiguous())
+        # if torch.isnan(delta).any():
+        #     print("NaN detected in delta!")
+        # if torch.isinf(delta).any():
+        #     print("Inf detected in delta!")
+        # print(delta.shape)
+        # print(torch.nonzero(delta))
+        # print(torch.nonzero(torch.tensor([0,0,0,1,0,2])))
+        # print(delta)
+        # print('{}\n{}\n{}\n{}\n{}\n'.format(sparse_jacobian.raster_settings.viewmatrix,
+        #     sparse_jacobian.raster_settings.projmatrix,
+        #     sparse_jacobian.raster_settings.tanfovx, 
+        #     sparse_jacobian.raster_settings.tanfovy,
+        #     sparse_jacobian.raster_settings.campos))
+        delta = delta.reshape(-1)
+        # if torch.nonzero(delta).any():
+        #     print('non zero elements')
+
+        
+
+        # offset = 0
+        # with torch.no_grad():
+        #     for group in self.param_groups:
+        #         assert len(group["params"]) == 1, "more than one tensor in group"
+        #         param = group["params"][0]
+        #         if param.grad is None:
+        #             continue
+
+        #         numel = param.numel()
+        #         print('Name: ', group['name'])
+        #         # param.add(delta.view(-1)[offset:offset + numel].view(param.shape))
+        #         # param.add(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
+        #         # print(param)
+        #         # r = (torch.rand(param.shape,  device=torch.device('cuda'))) * 0.01
+        #         # param += param.add(r)
+        #         # param += r
+        #         param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+
+        #         # print(param)
+        #         # print(param)
+        #         # param.add(0.1)
+        #         # torch.add()
+        #         offset += numel
+
+
 
 
         offset = 0
         with torch.no_grad():
-            for group in self.param_groups:
+            for group in [means3D_group, scales_group, rotations_group, opacities_group, f_dc_group, f_rest_group]:
                 assert len(group["params"]) == 1, "more than one tensor in group"
                 param = group["params"][0]
                 if param.grad is None:
                     continue
 
                 numel = param.numel()
-                param.add(delta.view(-1)[offset:offset + numel].view(param.shape))
-                # param.add(0.1)
-                # torch.add()
+                # print('Name: ', group['name'])
+                # if(group['name'] == 'f_dc'):
+                #     print(param)
+                #     print('update step:')
+                #     print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
+                # print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
+                # print(param)
+                param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+                # print('AFTER')
+                # print(param)
+
                 offset += numel
+                
+        # raise Exception("Work in progress")
+        
 
     def find_parameter_group(self, name):
         for group in self.param_groups:
