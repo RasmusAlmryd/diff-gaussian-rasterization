@@ -1621,7 +1621,12 @@ void GaussNewton::gaussNewtonUpdate(
     // r(0) = b - A*x(0)
     subtract<<<(N+255)/256, 256>>>(dev_r, dev_Ax0, dev_r, N);
 
-    
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
+
+
     // calculate M = diag(J^T * J)
     float* M_precon;
     cudaMalloc(&M_precon, N * sizeof(float));
@@ -1681,7 +1686,8 @@ void GaussNewton::gaussNewtonUpdate(
     // p(0) = z(0)
     float* dev_p;
     cudaMalloc(&dev_p, N * sizeof(float));
-    gpu_copy<<<(N+255)/256, 256>>>(dev_z, dev_p, N); //#change back
+    // gpu_copy<<<(N+255)/256, 256>>>(dev_z, dev_p, N); //#change back
+    cudaMemcpy(dev_p, dev_r, N*sizeof(float), cudaMemcpyDeviceToDevice);
 
     // for(int i = 0; i < 100; i++){
     //     cudaMemcpy(&h_float, &dev_p[i], sizeof(float), cudaMemcpyDeviceToHost);
@@ -1722,7 +1728,7 @@ void GaussNewton::gaussNewtonUpdate(
 
     
     int k = 0; 
-    const int MAX_ITERATIONS = 5;
+    const int MAX_ITERATIONS = 10;
     cudaMemcpy(h_R_prev, dev_R_prev, sizeof(float), cudaMemcpyDeviceToHost);
 
     
@@ -1747,7 +1753,10 @@ void GaussNewton::gaussNewtonUpdate(
         // }   
 
         // r(k)^T * z(k)
-        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N);
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N);
+
+        // r(k)^T * r(k)
+        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_numerator, N);
 
         // float h_float;
         double h_double;
@@ -1831,7 +1840,10 @@ void GaussNewton::gaussNewtonUpdate(
 
         // r(k)^T * z(k)  (used for beta calculation)
         cudaMemset(dev_denominator, 0, sizeof(float));
-        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_denominator, N); 
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_denominator, N); 
+
+        // r(k)^T * r(k)  (used for beta calculation)
+        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_denominator, N); 
 
         // r(k+1) = r(k) - alpha * Ap(k)
         next_r<<<(N+255)/256, 256>>>(dev_r, dev_Ap, dev_alpha, N);
@@ -1841,7 +1853,7 @@ void GaussNewton::gaussNewtonUpdate(
         
         // Check if R/Rprev > 0.85 or R < eps
         cudaMemcpy(h_R, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
-        // printf("R: %g, Rprev: %g \n", *h_R, *h_R_prev);
+        printf("R: %g, Rprev: %g \n", *h_R, *h_R_prev);
         printf("R/R_prev: %g \n", (*h_R/ *h_R_prev));
         // if (*h_R/ *h_R_prev > 0.85f){
         //     break;
@@ -1850,10 +1862,13 @@ void GaussNewton::gaussNewtonUpdate(
         *h_R_prev = *h_R;
 
         // z(k+1) = M^-1 * r(k)
-        next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
+        // next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
         
         // r(k+1)^T * z(k+1)
         cudaMemset(dev_numerator, 0, sizeof(float));
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); 
+
+        // r(k+1)^T * r(k+1)
         dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); 
         
         // beta = r(k+1)^T * z(k+1) / r(k)^T * z(k)

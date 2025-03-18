@@ -24,6 +24,7 @@
 #include "cuda_rasterizer/rasterizer.h"
 #include "cuda_rasterizer/adam.h"
 #include "cuda_rasterizer/gauss_newton.h"
+#include "cuda_rasterizer/gauss_newton_simple.h"
 #include <fstream>
 #include <string>
 #include <functional>
@@ -374,4 +375,20 @@ void gaussNewtonUpdate(
 		N, 
 		M, 
 		sparse_J_entries);
+}
+
+void gaussNewtonUpdateSimple(
+	torch::Tensor &x,
+	const torch::Tensor &J,
+	const torch::Tensor &residuals,
+	const uint32_t N, // number of parameters
+    const uint32_t M  // number of residuals
+){
+	GaussNewtonSimple::gaussNewtonUpdate(
+		x.contiguous().data<float>(), 
+		J.contiguous().data<float>(), 
+		residuals.contiguous().data<float>(), 
+		N, 
+		M
+	);
 }

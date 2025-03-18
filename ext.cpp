@@ -18,6 +18,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("mark_visible", &markVisible);
   m.def("adamUpdate", &adamUpdate);
   m.def("gaussNewtonUpdate", &gaussNewtonUpdate);
+  m.def("gaussNewtonUpdateSimple", &gaussNewtonUpdateSimple);
   m.def("fusedssim", &fusedssim);
   m.def("fusedssim_backward", &fusedssim_backward);
 }

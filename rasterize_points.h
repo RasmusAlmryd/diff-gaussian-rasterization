@@ -124,6 +124,15 @@ void gaussNewtonUpdate(
     const uint32_t sparse_J_entries
 );
 
+
+void gaussNewtonUpdateSimple(
+	torch::Tensor &x,
+	const torch::Tensor &J,
+	const torch::Tensor &residuals,
+	const uint32_t N, // number of parameters
+    const uint32_t M  // number of residuals
+);
+
 // void sumNumContrib(
 //     int W, int H,
 //     const int* n_contrib,

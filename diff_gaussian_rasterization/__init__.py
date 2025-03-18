@@ -94,9 +94,9 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.debug
         )
 
-        print('activated scales')
-        print(scales)
-        print('')
+        # print('activated scales')
+        # print(scales)
+        # print('')
 
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
@@ -344,8 +344,9 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, loss_residuals, radii, gaussian_model):
+    def step(self, visibility, loss_residuals, radii, gaussian_model, iteration):
 
+        
         step_gamma = self.defaults['step_gamma']
         step_alpha = self.defaults['step_alpha']
         sparse_jacobian = self.defaults['sparse_jacobian']
@@ -387,6 +388,12 @@ class GaussNewton(Optimizer):
         print(opacities)
         print(f_dc)
         print(f_rest)
+
+        # print(iteration)
+        # if iteration > 1:
+
+        #     return
+
         
 
         print('means3D: ', means3D.shape ,'\n scales: ', scales.shape ,'\n rotation: ', rotations.shape ,'\n opacity: ', opacities.shape ,'\n f_dc: ', f_dc.shape ,'\n f_rest: ', f_rest.shape)
@@ -591,8 +598,12 @@ class GaussNewton(Optimizer):
                 # print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
                 print(param)
                 param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
-                if(group['name'] == 'f_dc'):
-                    param.data = torch.ones(param.shape) * 1.77
+                # if(group['name'] == 'f_dc'):
+                #     param.data *= 0
+                #     param.data += torch.ones(param.shape).cuda() * 1.77
+                # if(group['name'] == 'scaling'):
+                #     param.data *= 0
+                #     param.data += torch.ones(param.shape).cuda() * 1.1
                 print('AFTER')
                 print(param)
 
