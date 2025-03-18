@@ -709,12 +709,21 @@ PerGaussianRenderCUDA(
 			atomicAdd(&dr_dxs[index*10 + 3], -0.5f * gdx * d.y * dL_dG);
 			atomicAdd(&dr_dxs[index*10 + 4], -0.5f * gdy * d.y * dL_dG);
 			atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
+			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+			// 	printf("g_id: %d (%d), pix_id: %d | ", gaussian_idx, splat_idx_global, pix_id);
+			// }
 			for (int ch = 0; ch < C; ++ch) {
+				// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+				// 	printf("dL_dpixel[%d]: %g (%g), ", ch, dL_dpixel[ch], dL_dcolortemp[ch]);
+				// }
 				atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
 				// if(gaussian_idx == 0){
 				// 	printf("dl_dcolor[%d]: %g (%g), ", ch, dL_dcolortemp[ch], dL_dpixel[ch]);
 				// }
 			}
+			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+			// 	printf("\n");
+			// }
 			// if(gaussian_idx == 0){
 			// 	printf("\n");
 			// }

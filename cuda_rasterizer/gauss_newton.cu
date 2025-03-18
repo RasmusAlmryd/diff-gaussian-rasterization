@@ -101,7 +101,7 @@ void scalar_divide(const float* numerator, const float* denominator, float* quot
     if (*denominator != 0.0f) {
         *quotient = *numerator / *denominator;
     } else {
-        *quotient = 0.0f;  // Handle division by zero gracefully
+        *quotient = 0.0f;  
     }
 }
 
@@ -111,7 +111,7 @@ void scalar_divide_double(const double* numerator, const double* denominator, fl
     if (*denominator != 0.0f) {
         *quotient = *numerator / *denominator;
     } else {
-        *quotient = 0.0f;  // Handle division by zero gracefully
+        *quotient = 0.0f;  
     }
 }
 
@@ -147,6 +147,10 @@ __global__ void next_z(float* M_precon, float* r, float* z, uint32_t N){
     // if (denominator == 0.0f){
     //     inv = 1.0;
     // }
+    // float z_val = 0;
+    // if (denominator != 0.0f){
+        //     z_val = r[idx] / denominator;
+        // }
     float inv = 1.0 / (denominator + 1e-8f);
     float z_val = inv * r[idx];
     z[idx] = z_val;
@@ -255,8 +259,11 @@ __device__ void computeColorFromSH_device(
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
-	glm::vec3* direct_color = ((glm::vec3*)dc);  //we removed + idx here
-	glm::vec3* sh = ((glm::vec3*)shs); //we removed + idx here and * max_coeffs
+	// glm::vec3* direct_color = ((glm::vec3*)dc);  //we removed + idx here
+	// glm::vec3* sh = ((glm::vec3*)shs); //we removed + idx here and * max_coeffs
+
+    glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
@@ -540,7 +547,7 @@ __device__ void computeCov2DCUDA_device(int P,
 	float dL_dtx = x_grad_mul * -h_x * tz2 * dL_dJ02;
 	float dL_dty = y_grad_mul * -h_y * tz2 * dL_dJ12;
 	float dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 + (2 * h_x * t.x) * tz3 * dL_dJ02 + (2 * h_y * t.y) * tz3 * dL_dJ12
-		- dL_dinvdepth[idx] * tz2;
+		- dL_dinvdepth[0] * tz2; // we removed idx..
 
 	// Account for transformation of mean to t
 	// t = transformPoint4x3(mean, view_matrix);
@@ -682,7 +689,7 @@ __device__ void preprocessCUDA_device(
     glm::vec4 rot = rotations[idx] / glm::length(rotations[idx]);
 	// Compute gradient updates due to computing covariance from scale/rotation
 	if (scales)
-		computeCov3D_device(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+		computeCov3D_device(idx, scales[idx], scale_modifier, rot, dL_dcov3D, dL_dscale, dL_drot);
 }
 
 
@@ -825,6 +832,13 @@ void calc_b_non_sparse(
     dr_drot.y = dr_drot_un.y;
     dr_drot.z = dr_drot_un.z;
     dr_drot.w = dr_drot_un.w;
+
+    // if(isnan(-dr_dmean.x * residual)){
+    //     printf("residual id: %d , ", y);
+    //     printf("dr_dmean.x: %g, dr_dmean.y: %g, dr_dmean.z: %g", dr_dmean.x, dr_dmean.y, dr_dmean.z );
+    //     printf("residual: %g", residual);
+    // }
+
 
 
     atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
@@ -1137,12 +1151,6 @@ void sum_residuals_temp(
     dr_drot.w = dr_drot_un.w;
 
 
-    
-    // dr_drot.x = dr_drot.x * expf(rot.x);
-    // dr_drot.y = dr_drot.y * expf(rot.y);
-    // dr_drot.z = dr_drot.z * expf(rot.z);
-    // dr_drot.w = dr_drot.w * expf(rot.w);
-
 
     atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y]);
     atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[y]);
@@ -1394,55 +1402,55 @@ void diagJTJ_temp(
     dr_drot.z = dr_drot_un.z;
     dr_drot.w = dr_drot_un.w;
 
-    // atomicAdd(&M_precon[x + 0], dr_dmean.x * dr_dmean.x);
-    // atomicAdd(&M_precon[x + 1], dr_dmean.y * dr_dmean.y);
-    // atomicAdd(&M_precon[x + 2], dr_dmean.z * dr_dmean.z);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 0], dr_dmean.x * dr_dmean.x);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 1], dr_dmean.y * dr_dmean.y);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 2], dr_dmean.z * dr_dmean.z);
 
-    // atomicAdd(&M_precon[x + 3], dr_dscale.x * dr_dscale.x);
-    // atomicAdd(&M_precon[x + 4], dr_dscale.y * dr_dscale.y);
-    // atomicAdd(&M_precon[x + 5], dr_dscale.z * dr_dscale.z);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 3], dr_dscale.x * dr_dscale.x);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 4], dr_dscale.y * dr_dscale.y);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 5], dr_dscale.z * dr_dscale.z);
 
-    // atomicAdd(&M_precon[x + 6], dr_drot.x * dr_drot.x);
-    // atomicAdd(&M_precon[x + 7], dr_drot.y * dr_drot.y);
-    // atomicAdd(&M_precon[x + 8], dr_drot.z * dr_drot.z);
-    // atomicAdd(&M_precon[x + 9], dr_drot.w * dr_drot.w);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 6], dr_drot.x * dr_drot.x);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 7], dr_drot.y * dr_drot.y);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 8], dr_drot.z * dr_drot.z);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 9], dr_drot.w * dr_drot.w);
 
-    // atomicAdd(&M_precon[x + 10], dr_dopacity * dr_dopacity);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 10], dr_dopacity * dr_dopacity);
 
-    // atomicAdd(&M_precon[x + 11], dr_ddc.x * dr_ddc.x);
-    // atomicAdd(&M_precon[x + 12], dr_ddc.y * dr_ddc.y);
-    // atomicAdd(&M_precon[x + 13], dr_ddc.z * dr_ddc.z);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 11], dr_ddc.x * dr_ddc.x);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 12], dr_ddc.y * dr_ddc.y);
+    atomicAdd(&M_precon[x * num_params_per_gauss + 13], dr_ddc.z * dr_ddc.z);
+
+    for(int i = 0; i < max_coeffs; i++){
+        atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3 + 0], dr_dsh[i].x * dr_dsh[i].x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3 + 0], dr_dsh[i].y * dr_dsh[i].y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3 + 0], dr_dsh[i].z * dr_dsh[i].z);
+    }
+
+    // atomicAdd(&M_precon[y], dr_dmean.x * dr_dmean.x);
+    // atomicAdd(&M_precon[y], dr_dmean.y * dr_dmean.y);
+    // atomicAdd(&M_precon[y], dr_dmean.z * dr_dmean.z);
+
+    // atomicAdd(&M_precon[y], dr_dscale.x * dr_dscale.x);
+    // atomicAdd(&M_precon[y], dr_dscale.y * dr_dscale.y);
+    // atomicAdd(&M_precon[y], dr_dscale.z * dr_dscale.z);
+
+    // atomicAdd(&M_precon[y], dr_drot.x * dr_drot.x);
+    // atomicAdd(&M_precon[y], dr_drot.y * dr_drot.y);
+    // atomicAdd(&M_precon[y], dr_drot.z * dr_drot.z);
+    // atomicAdd(&M_precon[y], dr_drot.w * dr_drot.w);
+
+    // atomicAdd(&M_precon[y], dr_dopacity * dr_dopacity);
+
+    // atomicAdd(&M_precon[y], dr_ddc.x * dr_ddc.x);
+    // atomicAdd(&M_precon[y], dr_ddc.y * dr_ddc.y);
+    // atomicAdd(&M_precon[y], dr_ddc.z * dr_ddc.z);
 
     // for(int i = 0; i < max_coeffs; i++){
     //     atomicAdd(&M_precon[y], dr_dsh[i].x * dr_dsh[i].x);
     //     atomicAdd(&M_precon[y], dr_dsh[i].y * dr_dsh[i].y);
     //     atomicAdd(&M_precon[y], dr_dsh[i].z * dr_dsh[i].z);
     // }
-
-    atomicAdd(&M_precon[y], dr_dmean.x * dr_dmean.x);
-    atomicAdd(&M_precon[y], dr_dmean.y * dr_dmean.y);
-    atomicAdd(&M_precon[y], dr_dmean.z * dr_dmean.z);
-
-    atomicAdd(&M_precon[y], dr_dscale.x * dr_dscale.x);
-    atomicAdd(&M_precon[y], dr_dscale.y * dr_dscale.y);
-    atomicAdd(&M_precon[y], dr_dscale.z * dr_dscale.z);
-
-    atomicAdd(&M_precon[y], dr_drot.x * dr_drot.x);
-    atomicAdd(&M_precon[y], dr_drot.y * dr_drot.y);
-    atomicAdd(&M_precon[y], dr_drot.z * dr_drot.z);
-    atomicAdd(&M_precon[y], dr_drot.w * dr_drot.w);
-
-    atomicAdd(&M_precon[y], dr_dopacity * dr_dopacity);
-
-    atomicAdd(&M_precon[y], dr_ddc.x * dr_ddc.x);
-    atomicAdd(&M_precon[y], dr_ddc.y * dr_ddc.y);
-    atomicAdd(&M_precon[y], dr_ddc.z * dr_ddc.z);
-
-    for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&M_precon[y], dr_dsh[i].x * dr_dsh[i].x);
-        atomicAdd(&M_precon[y], dr_dsh[i].y * dr_dsh[i].y);
-        atomicAdd(&M_precon[y], dr_dsh[i].z * dr_dsh[i].z);
-    }
 }
 
 
@@ -1518,6 +1526,9 @@ void GaussNewton::gaussNewtonUpdate(
     float* b;
     cudaMalloc(&b, N * sizeof(float));
     cudaMemset(b,0, N * sizeof(float));
+    printf("tot num params: %d \n", N);
+    printf("tot num gaussians: %d \n", P);
+    printf("tot num residuals: %d \n", M);
 
     calc_b_non_sparse<NUM_CHANNELS_3DGS><<<(P*M+255)/256, 256>>>(
         b,
@@ -1549,13 +1560,12 @@ void GaussNewton::gaussNewtonUpdate(
     );
 
     // printf("Max coeffs: %d", max_coeffs);
+    printf("hej \n");
 
-    // for(int i = 0; i < 11*59; i++){
-    //     cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
-    // }
-    
-    // return;
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
 
 
     // return;
@@ -1652,7 +1662,7 @@ void GaussNewton::gaussNewtonUpdate(
     //     printf("r(%d): %g \n",i, h_float);
     // }
 
-    // for(int i = 0; i < 100; i++){
+    // for(int i = 0; i < 11*59; i++){
     //     cudaMemcpy(&h_float, &M_precon[i], sizeof(float), cudaMemcpyDeviceToHost);
     //     printf("M_precon(%d): %g \n",i, h_float);
     // }
@@ -1805,7 +1815,7 @@ void GaussNewton::gaussNewtonUpdate(
         // alpha = r(k)^T * z(k) / p(k)^T * Ap(k) 
         scalar_divide_double<<<1, 1>>>(dev_numerator, dev_denominator, dev_alpha); 
 
-        // float h_float_a;
+        float h_float_a;
         // cudaMemcpy(&h_float_a, dev_alpha, sizeof(float), cudaMemcpyDeviceToHost);
         // printf("alpha(%d): %g \n",0, h_float_a);
         

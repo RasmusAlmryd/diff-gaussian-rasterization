@@ -94,6 +94,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.debug
         )
 
+        print('activated scales')
+        print(scales)
+        print('')
+
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
@@ -186,6 +190,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             None,
             None,
         )
+
+        # print(cov3D)
+        # print(scales)
+        # print(rotations)
 
         sparse_J.values = J_values
         sparse_J.indices = J_indices
@@ -317,10 +325,13 @@ class SparseGaussianAdam(torch.optim.Adam):
             # if (group['name'] == 'f_dc'):
             #     print(param)
 
-            if (group['name'] == 'rotation'):
-                print(param)
+            # if (group['name'] == 'rotation'):
+            #     print(param)
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
+            if (group['name'] == 'f_dc' or group['name'] == 'scaling'):
+                print(group['name'])
+                print(param)
 
             # _C.GN([params], [params.grad], ..)
 
@@ -370,6 +381,12 @@ class GaussNewton(Optimizer):
 
         # print(scales)
 
+        print(means3D)
+        print(scales)
+        print(rotations)
+        print(opacities)
+        print(f_dc)
+        print(f_rest)
         
 
         print('means3D: ', means3D.shape ,'\n scales: ', scales.shape ,'\n rotation: ', rotations.shape ,'\n opacity: ', opacities.shape ,'\n f_dc: ', f_dc.shape ,'\n f_rest: ', f_rest.shape)
@@ -446,6 +463,7 @@ class GaussNewton(Optimizer):
         # print(sparse_jacobian.values)
         # print(P, D, max_coeffs)
         
+
         _C.gaussNewtonUpdate(
             P, D, max_coeffs, width, height, # max_coeffs = M
             means3D,
@@ -515,7 +533,7 @@ class GaussNewton(Optimizer):
         # print(delta.shape)
         # print(torch.nonzero(delta))
         # print(torch.nonzero(torch.tensor([0,0,0,1,0,2])))
-        # print(delta)
+        print(delta)
         # print('{}\n{}\n{}\n{}\n{}\n'.format(sparse_jacobian.raster_settings.viewmatrix,
         #     sparse_jacobian.raster_settings.projmatrix,
         #     sparse_jacobian.raster_settings.tanfovx, 
@@ -524,6 +542,8 @@ class GaussNewton(Optimizer):
         delta = delta.reshape(-1)
         # if torch.nonzero(delta).any():
         #     print('non zero elements')
+
+        # raise Exception("Work in progress")
 
         
 
@@ -563,20 +583,22 @@ class GaussNewton(Optimizer):
                     continue
 
                 numel = param.numel()
-                # print('Name: ', group['name'])
+                print('Name: ', group['name'])
                 # if(group['name'] == 'f_dc'):
                 #     print(param)
                 #     print('update step:')
                 #     print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
                 # print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
-                # print(param)
+                print(param)
                 param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
-                # print('AFTER')
-                # print(param)
+                if(group['name'] == 'f_dc'):
+                    param.data = torch.ones(param.shape) * 1.77
+                print('AFTER')
+                print(param)
 
                 offset += numel
                 
-        # raise Exception("Work in progress")
+        raise Exception("Work in progress")
         
 
     def find_parameter_group(self, name):

@@ -498,6 +498,8 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		antialiasing
 	), debug)
 
+	// printf("preprocess");
+
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
 
@@ -559,6 +561,8 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	char* sample_chunkptr = sampleBuffer(sample_chunk_size);
 	SampleState sampleState = SampleState::fromChunk(sample_chunkptr, bucket_sum);
 
+	// printf("allocating");
+
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	CHECK_CUDA(FORWARD::render(
@@ -580,68 +584,80 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		geomState.depths,
 		invdepth), debug)
 
+	// printf("render");
+
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHANNELS_3DGS, cudaMemcpyDeviceToDevice), debug);
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
 
 	//gaussian_contrib len = num_rendered (duplicate gaussians)
-	CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
-
-	perGaussianContribCount<<<tile_grid, block >>>(
-		imgState.ranges,
-		imgState.n_contrib,
-		width, height,
-		binningState.gaussian_contrib
-	);
-
-	
-	// uint2 test_range;
-	// CHECK_CUDA(cudaMemcpy(&test_range, &imgState.ranges[0], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
-	
-	// printf("range of tile #1: x: %d y: %d, range: %d \n", test_range.x, test_range.y, test_range.y-test_range.x);
-	
-	// int pix_contrib;
-	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[0], sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// printf("n_contrib[0]: %d \n", pix_contrib);
-	
-	// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[70], sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// printf("n_contrib[70]: %d \n", pix_contrib);
-	
-	// to prefix sum over gaussian_contrib
-	CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
-	
 	int num_residuals;
-	CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// printf("num_residuals: %d \n", num_residuals);
-	// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
-	
-	
-	
-	
-	// CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
-	
-	// perGaussianContribCount<<<tile_grid, block >>>(
-	// 	imgState.ranges,
-	// 	imgState.actual_contrib,
-	// 	width, height,
-	// 	binningState.gaussian_contrib
-	// );
-	
-	// // int gauss_residuals;
-	// // for (int i = 0; i < 10; i+=1){
-	// // 	CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
-	
-	// // 	printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
-	// // }
-	// CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
-	
-	// int num_residuals;
-	// CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// printf("num_residuals: %d \n", num_residuals);
-	
-	// throw std::invalid_argument("temp exception.. REMOVE");
-	size_t residual_chunk_size = required<ResidualState>(num_residuals);
-	char* residual_chunkptr = residualBuffer(residual_chunk_size);
-	ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
+	if(num_rendered > 0){
+		CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
+
+		// printf("num_rendered: %d", num_rendered);
+
+		perGaussianContribCount<<<tile_grid, block >>>(
+			imgState.ranges,
+			imgState.n_contrib,
+			width, height,
+			binningState.gaussian_contrib
+		);
+
+		// printf("per gaussian contrib");
+
+		
+		// uint2 test_range;
+		// CHECK_CUDA(cudaMemcpy(&test_range, &imgState.ranges[0], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
+		
+		// printf("range of tile #1: x: %d y: %d, range: %d \n", test_range.x, test_range.y, test_range.y-test_range.x);
+		
+		// int pix_contrib;
+		// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[0], sizeof(int), cudaMemcpyDeviceToHost), debug);
+		// printf("n_contrib[0]: %d \n", pix_contrib);
+		
+		// CHECK_CUDA(cudaMemcpy(&pix_contrib, &imgState.n_contrib[70], sizeof(int), cudaMemcpyDeviceToHost), debug);
+		// printf("n_contrib[70]: %d \n", pix_contrib);
+		
+		// to prefix sum over gaussian_contrib
+		CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
+		
+		
+		CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+		// printf("num_residuals: %d \n", num_residuals);
+		// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
+		
+		// printf("inclusive sum");
+		
+		
+		// CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
+		
+		// perGaussianContribCount<<<tile_grid, block >>>(
+		// 	imgState.ranges,
+		// 	imgState.actual_contrib,
+		// 	width, height,
+		// 	binningState.gaussian_contrib
+		// );
+		
+		// // int gauss_residuals;
+		// // for (int i = 0; i < 10; i+=1){
+		// // 	CHECK_CUDA(cudaMemcpy(&gauss_residuals, &binningState.gaussian_contrib[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+		
+		// // 	printf("number of residuals contributed to by gaussian #%d: %d\n",i, gauss_residuals);
+		// // }
+		// CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
+		
+		// int num_residuals;
+		// CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+		// printf("num_residuals: %d \n", num_residuals);
+		
+		// throw std::invalid_argument("temp exception.. REMOVE");
+		// printf("num residuals: %d", num_residuals);
+		size_t residual_chunk_size = required<ResidualState>(num_residuals);
+		char* residual_chunkptr = residualBuffer(residual_chunk_size);
+		ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
+	}
+
+	// printf("forward done");
 	
 	return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 }
