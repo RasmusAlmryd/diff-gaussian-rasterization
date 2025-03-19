@@ -178,7 +178,7 @@ void subtract(float* a, float* b, float* c, uint32_t N){
 
 void GaussNewtonSimple::gaussNewtonUpdate(
     float* x,   // Is named delta in init.py : Check argument position.
-    float* J,  // stored in pixel order
+    float* J,  // stored in residual order hmmm
     float* residuals,
     const uint32_t N, // number of parameters
     const uint32_t M  // number of residuals
@@ -200,6 +200,11 @@ void GaussNewtonSimple::gaussNewtonUpdate(
         N,
         M
     );
+
+    for(int i = 0; i<N; i++){
+        cudaMemcpy(&test_val, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g\n", i, test_val);
+    }
 
     float* Ap;
     cudaMalloc(&Ap, N * sizeof(float));
@@ -259,7 +264,7 @@ void GaussNewtonSimple::gaussNewtonUpdate(
 
 
     // R = rTr
-    GNS_kernels::dot<<<(N+255)/256, 256>>>(r, z, dev_R_prev, N);
+    GNS_kernels::dot<<<(N+255)/256, 256>>>(r, r, dev_R_prev, N);
 
 
     float* alpha;
@@ -307,7 +312,10 @@ void GaussNewtonSimple::gaussNewtonUpdate(
 
         // x(k+1) = x + alpha * p
         GNS_kernels::next_x<<<(N+255)/256, 256>>>(x, p, alpha, N);
-
+        for(int i = 0; i<N; i++){
+            cudaMemcpy(&test_val, &x[i], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("x(%d): %g\n", i, test_val);
+        }
         
         // r(k)^T * z(k)  (used for beta calculation)
         cudaMemset(denominator, 0, sizeof(float));
@@ -324,7 +332,7 @@ void GaussNewtonSimple::gaussNewtonUpdate(
         
         // Check if R/Rprev > 0.85 or R < eps
         cudaMemcpy(&h_R, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
-        // printf("R: %g, Rprev: %g \n", h_R, h_R_prev);
+        printf("R: %g, Rprev: %g \n", h_R, h_R_prev);
         printf("R/R_prev: %g \n", (h_R/ h_R_prev));
         if (h_R/ h_R_prev > 0.85f){
             break;
@@ -342,6 +350,8 @@ void GaussNewtonSimple::gaussNewtonUpdate(
         
         // beta = r(k+1)^T * z(k+1) / r(k)^T * z(k)
         GNS_kernels::scalar_divide<<<1, 1>>>(numerator, denominator, beta); 
+        cudaMemcpy(&test_val, &beta, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("beta: %g\n", test_val);
 
         // p(k+1) = z(k) + beta * p(k)
         GNS_kernels::next_p<<<(N+255)/256, 256>>>(z, p, beta, N);
