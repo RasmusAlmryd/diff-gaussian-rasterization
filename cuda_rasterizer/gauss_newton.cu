@@ -1849,6 +1849,7 @@ void GaussNewton::gaussNewtonUpdate(
         next_r<<<(N+255)/256, 256>>>(dev_r, dev_Ap, dev_alpha, N);
 
         // R = r(k+1)^T * r(k+1)
+        cudaMemset(dev_R, 0, sizeof(float));
         dot<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_R, N); 
         
         // Check if R/Rprev > 0.85 or R < eps

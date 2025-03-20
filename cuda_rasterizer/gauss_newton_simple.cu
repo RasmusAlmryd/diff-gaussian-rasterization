@@ -74,6 +74,7 @@ __global__ void dot(float *a, float *b, float *c, uint32_t N){
     if(idx >= N) return;
 
     temp[threadIdx.x] = a[idx] * b[idx];
+    printf("temp[%d]: %g \n", idx, temp[idx]);
 
     __syncthreads();
 
@@ -84,7 +85,8 @@ __global__ void dot(float *a, float *b, float *c, uint32_t N){
         {
             sum += temp[i];
         }
-        atomicAdd(c, sum);
+        printf("sum: %g", sum);
+        atomicAdd(&c[0], sum);
     }
 }
 
@@ -94,8 +96,9 @@ void residual_dot_sum(float* J, float* v, float* residual_dot_v, uint32_t N, uin
     if(idx >= N*M) return;
     int x = idx % N;  // Parameter index
     int y = idx / N;  // Pixel index
-
-    atomicAdd(&residual_dot_v[y], J[x + y * N] * v[x]);
+    float dot_sum = J[x + y * N] * v[x];
+    // printf("(x: %d, y: %d) J*v: %g \n",x,y, dot_sum);
+    atomicAdd(&residual_dot_v[y], dot_sum);
 }
 
 
@@ -105,6 +108,8 @@ void sum_residuals(float* Ap, float* residual_dot_v, float* J, uint32_t N, uint3
     if(idx >= N*M) return;
     int x = idx % N;  // Parameter index
     int y = idx / N;  // Pixel index
+    // printf("(x: %d, y: %d) residual: %g, J: %g \n",x,y, residual_dot_v[y], J[x + y * N]);
+
     atomicAdd(&Ap[x], residual_dot_v[y] * J[x + y * N]);
 }
 
@@ -112,6 +117,7 @@ void sum_residuals(float* Ap, float* residual_dot_v, float* J, uint32_t N, uint3
 void Av(float* J, float* v, float* Av, uint32_t N, uint32_t M){
     float* residual_dot_v;
     cudaMalloc(&residual_dot_v, M * sizeof(float));
+    cudaMemset(residual_dot_v, 0, M * sizeof(float));
     residual_dot_sum<<<((N*M)+255)/256, 256>>>(J, v, residual_dot_v, N, M);    // (r(i)^T * p)
     sum_residuals<<<((N*M)+255)/256, 256>>>(Av, residual_dot_v, J, N, M);    // Ap = r(i) * (r(i)^T * p)
     cudaFree(residual_dot_v);
@@ -238,10 +244,20 @@ void GaussNewtonSimple::gaussNewtonUpdate(
         M
     );
 
+    for(int i = 0; i<N; i++){
+        cudaMemcpy(&test_val, &M_precon[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("M(%d): %g\n", i, test_val);
+    }
+
     // z = M^-1*r
     float* z;
     cudaMalloc(&z, N * sizeof(float));
     GNS_kernels::next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+
+    for(int i = 0; i<N; i++){
+        cudaMemcpy(&test_val, &z[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("z(%d): %g\n", i, test_val);
+    }
 
 
     // p = z
@@ -251,7 +267,7 @@ void GaussNewtonSimple::gaussNewtonUpdate(
 
 
 
-    float eps = 0.00000001;
+    float eps = 1e-8;
     float h_R;
     float h_R_prev;
     float* dev_R;
@@ -302,6 +318,11 @@ void GaussNewtonSimple::gaussNewtonUpdate(
             M
         );
 
+        for(int i = 0; i<N; i++){
+            cudaMemcpy(&test_val, &Ap[i], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("Ap(%d): %g\n", i, test_val);
+        }
+
 
         // p(k)^T * Ap(k) 
         GNS_kernels::dot<<<(N+255)/256, 256>>>(p, Ap, denominator, N);
@@ -316,6 +337,9 @@ void GaussNewtonSimple::gaussNewtonUpdate(
             cudaMemcpy(&test_val, &x[i], sizeof(float), cudaMemcpyDeviceToHost);
             printf("x(%d): %g\n", i, test_val);
         }
+
+        cudaMemcpy(&test_val, alpha, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("alpha: %g\n", test_val);
         
         // r(k)^T * z(k)  (used for beta calculation)
         cudaMemset(denominator, 0, sizeof(float));
@@ -325,16 +349,24 @@ void GaussNewtonSimple::gaussNewtonUpdate(
 
         // r(k+1) = r(k) - alpha * Ap(k)
         GNS_kernels::next_r<<<(N+255)/256, 256>>>(r, Ap, alpha, N);
+        for(int i = 0; i<N; i++){
+            cudaMemcpy(&test_val, &r[i], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("r(%d): %g\n", i, test_val);
+        }
+
 
 
         // R = r(k+1)^T * r(k+1)
+        cudaMemset(dev_R, 0, sizeof(float));
+        cudaMemcpy(&test_val, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("dev_R: %g\n", test_val);
         GNS_kernels::dot<<<(N+255)/256, 256>>>(r, r, dev_R, N); 
         
         // Check if R/Rprev > 0.85 or R < eps
         cudaMemcpy(&h_R, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
         printf("R: %g, Rprev: %g \n", h_R, h_R_prev);
         printf("R/R_prev: %g \n", (h_R/ h_R_prev));
-        if (h_R/ h_R_prev > 0.85f){
+        if (h_R < eps || h_R/ h_R_prev > 0.85f){
             break;
         }
         
@@ -342,19 +374,36 @@ void GaussNewtonSimple::gaussNewtonUpdate(
 
         // z(k+1) = M^-1 * r(k)
         GNS_kernels::next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+
+        for(int i = 0; i<N; i++){
+            cudaMemcpy(&test_val, &z[i], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("z(%d): %g\n", i, test_val);
+        }
         
         // r(k+1)^T * z(k+1)
         cudaMemset(numerator, 0, sizeof(float));
         GNS_kernels::dot<<<(N+255)/256, 256>>>(r, z, numerator, N); 
 
+        cudaMemcpy(&test_val, numerator, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("numerator: %g\n", test_val);
+
+        cudaMemcpy(&test_val, denominator, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("denominator: %g\n", test_val);
+
+
         
         // beta = r(k+1)^T * z(k+1) / r(k)^T * z(k)
         GNS_kernels::scalar_divide<<<1, 1>>>(numerator, denominator, beta); 
-        cudaMemcpy(&test_val, &beta, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&test_val, beta, sizeof(float), cudaMemcpyDeviceToHost);
         printf("beta: %g\n", test_val);
 
         // p(k+1) = z(k) + beta * p(k)
         GNS_kernels::next_p<<<(N+255)/256, 256>>>(z, p, beta, N);
+
+        for(int i = 0; i<N; i++){
+            cudaMemcpy(&test_val, &p[i], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("p(%d): %g\n", i, test_val);
+        }
 
         k++;
     }
