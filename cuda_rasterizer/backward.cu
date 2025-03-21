@@ -385,6 +385,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 	dL_dq.z = 2 * x * (dL_dMt[1][0] + dL_dMt[0][1]) + 2 * r * (dL_dMt[2][0] - dL_dMt[0][2]) + 2 * z * (dL_dMt[1][2] + dL_dMt[2][1]) - 4 * y * (dL_dMt[2][2] + dL_dMt[0][0]);
 	dL_dq.w = 2 * r * (dL_dMt[0][1] - dL_dMt[1][0]) + 2 * x * (dL_dMt[2][0] + dL_dMt[0][2]) + 2 * y * (dL_dMt[1][2] + dL_dMt[2][1]) - 4 * z * (dL_dMt[1][1] + dL_dMt[0][0]);
 
+	// printf("normalized rotation: x: %g, y: %g, z: %g, w: %g, \n", dL_dq.x,dL_dq.y,dL_dq.z, dL_dq.w);
 	// Gradients of loss w.r.t. unnormalized quaternion
 	float4* dL_drot = (float4*)(dL_drots + idx);
 	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
@@ -610,12 +611,12 @@ PerGaussianRenderCUDA(
 			const float alpha = min(0.99f, con_o.w * G);
 			
 			
-			int pixel_offset = global_gaussian_offset + pixel_iterator;
-			if (pixel_offset >= global_gaussian_offset_end) {
-				break;
-			}
-			atomicAdd(&residual_index[pixel_offset], pix_id * P + gaussian_idx); //index for sorting by pixel id
-			pixel_iterator++;
+			// int pixel_offset = global_gaussian_offset + pixel_iterator;
+			// if (pixel_offset >= global_gaussian_offset_end) {
+			// 	break;
+			// }
+			// atomicAdd(&residual_index[pixel_offset], pix_id * P + gaussian_idx); //index for sorting by pixel id
+			// pixel_iterator++;
 
 			if (alpha < 1.0f / 255.0f) continue;
 			const float weight = alpha * T;
@@ -625,18 +626,25 @@ PerGaussianRenderCUDA(
 			float bg_dot_dpixel = 0.0f;
 			float dL_dalpha = 0.0f;
 			float dL_dcolortemp[C] = {0.0f};
+			float dL_dalpha_channel[C] = {0.0f};
+			ard += weight * invd;
+
+
 			for (int ch = 0; ch < C; ++ch) {
 				ar[ch] += weight * c[ch]; // TODO: check
 				const float &dL_dchannel = dL_dpixel[ch];
 				Register_dL_dcolors[ch] += weight * dL_dchannel;
 				dL_dcolortemp[ch] = weight * dL_dchannel;
 				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
-				
+				dL_dalpha_channel[ch] = ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel; // maybe
+				dL_dalpha_channel[ch] += ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
+				dL_dalpha_channel[ch] += (-T_final / (1.0f - alpha)) * (bg_color[ch] * dL_dpixel[ch]);
+
 				bg_dot_dpixel += bg_color[ch] * dL_dpixel[ch];
 			}
 			
 			// // add the gradient contribution of this pixel's depth to the gaussian
-			ard += weight * invd;
+			// ard += weight * invd; // changed 
 			Register_dL_dinvdepths += weight * dL_invdepth;
 			dL_dalpha += ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
 			
@@ -663,6 +671,8 @@ PerGaussianRenderCUDA(
 			Register_dL_dconic2D_w += -0.5f * gdy * d.y * dL_dG;
 			Register_dL_dopacity += G * dL_dalpha;
 			
+
+			// maybe store: dL_dalpha[channel], d.x, d.y, G, (dL_invdepth, weight)
 			
 			// gaussian_offset(gaussian_idx) = accum pixels
 			// gaussian_contrib = num pixels gaussian contrib
@@ -709,21 +719,21 @@ PerGaussianRenderCUDA(
 			atomicAdd(&dr_dxs[index*10 + 3], -0.5f * gdx * d.y * dL_dG);
 			atomicAdd(&dr_dxs[index*10 + 4], -0.5f * gdy * d.y * dL_dG);
 			atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
-			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-			// 	printf("g_id: %d (%d), pix_id: %d | ", gaussian_idx, splat_idx_global, pix_id);
-			// }
+			if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+				printf("g_id: %d (%d), pix_id: %d | ", gaussian_idx, splat_idx_global, pix_id);
+			}
 			for (int ch = 0; ch < C; ++ch) {
-				// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-				// 	printf("dL_dpixel[%d]: %g (%g), ", ch, dL_dpixel[ch], dL_dcolortemp[ch]);
-				// }
+				if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+					printf("dL_dpixel[%d]: %g (%g), ", ch, dL_dpixel[ch], dL_dalpha_channel[ch]);
+				}
 				atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
 				// if(gaussian_idx == 0){
 				// 	printf("dl_dcolor[%d]: %g (%g), ", ch, dL_dcolortemp[ch], dL_dpixel[ch]);
 				// }
 			}
-			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-			// 	printf("\n");
-			// }
+			if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+				printf("\n");
+			}
 			// if(gaussian_idx == 0){
 			// 	printf("\n");
 			// }
@@ -831,6 +841,26 @@ void BACKWARD::preprocess(
 		dL_dscale,
 		dL_drot,
 		dL_dopacity);
+	
+	// glm::vec4 test_val;
+	// cudaMemcpy(&test_val, &rotations[0], sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+	// printf("rot.x: %g,rot.y: %g,rot.z: %g,rot.w: %g,\n",  test_val.x, test_val.y, test_val.z, test_val.w);
+	// cudaMemcpy(&test_val, &dL_drot[0], sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+	// printf("rot.x: %g,rot.y: %g,rot.z: %g,rot.w: %g,\n",  test_val.x, test_val.y, test_val.z, test_val.w);
+	// float test_float;
+	// for(int i = 0; i < 6; i++){
+	// 	cudaMemcpy(&test_float, &dL_dcov3D[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("dL_dcov3D[%d]: %g\n", i , test_float);
+    // }
+	// for(int i = 0; i < 6; i++){
+	// 	cudaMemcpy(&test_float, &cov3Ds[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("cov3Ds[%d]: %g\n", i , test_float);
+    // }
+	// for(int i = 0; i < 4; i++){
+	// 	cudaMemcpy(&test_float, &dL_dconic[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("dL_dconic[%d]: %g\n", i , test_float);
+	// }
+	// printf("\n");
 }
 
 void BACKWARD::render(

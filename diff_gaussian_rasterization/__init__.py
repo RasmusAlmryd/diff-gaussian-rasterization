@@ -382,12 +382,12 @@ class GaussNewton(Optimizer):
 
         # print(scales)
 
-        print(means3D)
-        print(scales)
-        print(rotations)
-        print(opacities)
-        print(f_dc)
-        print(f_rest)
+        # print(means3D)
+        # print(scales)
+        # print(rotations)
+        # print(opacities)
+        # print(f_dc)
+        # print(f_rest)
 
         # print(iteration)
         # if iteration > 1:
@@ -408,6 +408,9 @@ class GaussNewton(Optimizer):
             param = group["params"][0]
             if param.grad is None:
                 continue
+            
+            print(group['name'])
+            print(param.grad)
 
             # Lazy state initialization from adam, try to fix this to get above 3000 iterations w/o crash
             state = self.state[param]
@@ -502,7 +505,7 @@ class GaussNewton(Optimizer):
             M, 
             sparse_jacobian.num_entries)
 
-
+        # raise Exception('testing')
         # num_params_per_gaussian = 59
         # num_gaussians = P
         # print(P)
@@ -579,6 +582,8 @@ class GaussNewton(Optimizer):
         #         offset += numel
 
 
+        if delta.isnan().any():
+            return
 
 
         offset = 0
@@ -597,11 +602,14 @@ class GaussNewton(Optimizer):
                 #     print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
                 # print(delta[offset:offset + numel].view(-1, P).T.view(param.shape))
                 print(param)
+                # if(group['name'] == 'scaling'):
+                #     param.data += torch.ones_like(param) * 0.1
+                #     continue
                 param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
                 # if(group['name'] == 'f_dc'):
                 #     param.data *= 0
                 #     param.data += torch.ones(param.shape).cuda() * 1.77
-                # if(group['name'] == 'scaling'):
+                
                 #     param.data *= 0
                 #     param.data += torch.ones(param.shape).cuda() * 1.1
                 print('AFTER')

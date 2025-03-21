@@ -10,15 +10,29 @@ namespace cg = cooperative_groups;
 
 
 
+__global__
+void createJ(){
+
+}
+
+__global__ void diagJTJ(const float* J, float* M_precon, uint32_t N, uint32_t M){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N*M) return;
+    uint32_t x = idx % N;
+    uint32_t y = idx / N;
+
+
+    float j_val = J[x + y * N];
+
+    float tmp = j_val * j_val;
+
+    atomicAdd(&M_precon[x],tmp);
+}
 
 
 
 
-
-
-
-__global__ 
-void dot(float *a, float *b, float *c, uint32_t N){
+__global__ void dot(float *a, float *b, float *c, uint32_t N){
     __shared__ float temp[THREADS_PER_BLOCK];
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -39,8 +53,7 @@ void dot(float *a, float *b, float *c, uint32_t N){
     }
 }
 
-__global__ 
-void dot_d(float *a, float *b, double *c, uint32_t N){
+__global__ void dot_d(float *a, float *b, double *c, uint32_t N){
     __shared__ double temp[THREADS_PER_BLOCK];
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -67,7 +80,13 @@ void dot_d(float *a, float *b, double *c, uint32_t N){
 }
 
 
-
+__global__
+void gpu_copy(float* src, float* dest, const uint32_t N){
+    uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if(idx >= N) return;
+    
+    dest[idx] = src[idx];
+}
 __global__ 
 void Scale(float* v, float* s, float* v_acc, uint32_t N){                // Used for calculating Ap in PCG
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -124,6 +143,14 @@ __global__ void next_z(float* M_precon, float* r, float* z, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     float denominator = M_precon[idx];
+    // float inv = 1.0 / denominator;
+    // if (denominator == 0.0f){
+    //     inv = 1.0;
+    // }
+    // float z_val = 0;
+    // if (denominator != 0.0f){
+        //     z_val = r[idx] / denominator;
+        // }
     float inv = 1.0 / (denominator + 1e-8f);
     float z_val = inv * r[idx];
     z[idx] = z_val;
@@ -136,7 +163,34 @@ void PCG(float* J, float gamma, float alpha){
     
 }
 
+__global__
+void residual_dot_sum(float* J, float* v, float* residual_dot_v, uint32_t N, uint32_t M){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N*M) return;
+    uint32_t x = idx % N; // residual
+    uint32_t y = idx / N; // parameter
 
+    atomicAdd(&residual_dot_v[y], J[x + y * N] * v[x]);
+}
+
+
+__global__
+void sum_residuals(float* Ap, float* residual_dot_p, float* J, uint32_t N, uint32_t M){  // Sums over r(i) with scalar vector product r(i)^T * p
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N*M) return;
+    uint32_t x = idx % N;
+    uint32_t y = idx / N;
+    atomicAdd(&Ap[x], residual_dot_p[y] * J[x + y * N]);
+}
+
+
+void Av(float* J, float* v, float* Av, uint32_t N, uint32_t M){
+    float* residual_dot_v;
+    cudaMalloc(&residual_dot_v, M * sizeof(float));
+    residual_dot_sum<<<((N*M)+255)/256, 256>>>(J, v, residual_dot_v, N, M);    // (r(i)^T * p)
+    sum_residuals<<<((N*M)+255)/256, 256>>>(Av, residual_dot_v, J, N, M);    // Ap = r(i) * (r(i)^T * p)
+    cudaFree(residual_dot_v);
+}
 
 
 
@@ -148,8 +202,37 @@ void subtract(float* a, float* b, float* c, uint32_t N){
     c[idx] = a[idx] - b[idx];
 }
 
+__global__ 
+void sumContrib(int W, int H, const uint32_t* n_contrib, int* sum){
+    uint2 pix = { blockIdx.x*blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y};
+    uint32_t pix_id = W * pix.y + pix.x;
+    int val = n_contrib[pix_id];
+    atomicAdd(sum, val);
+
+}
 
 
+
+__global__
+void JTv(float* out_JTv, float* sparse_J, uint64_t* indices, float* v, uint32_t N, uint32_t M, uint32_t num_entries){
+
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t residual_id = indices[idx] / M;
+    uint64_t gaussian_id = indices[idx] % M;
+
+    // execute once per gaussian parameter
+    // TODO: do extra calculations for each
+    float result = sparse_J[idx] * v[residual_id];
+
+    atomicAdd(&out_JTv[gaussian_id], result);
+}
+
+
+// __device__ 
+// float sigmoid(float x){
+//     float s = 1 / (1-expf(x));
+//     return s;
+// }
 
 __device__ 
 float sigmoid_grad(float x){
@@ -544,8 +627,15 @@ __device__ void computeCov3D_device(
 	dL_dq.w = 2 * r * (dL_dMt[0][1] - dL_dMt[1][0]) + 2 * x * (dL_dMt[2][0] + dL_dMt[0][2]) + 2 * y * (dL_dMt[1][2] + dL_dMt[2][1]) - 4 * z * (dL_dMt[1][1] + dL_dMt[0][0]);
 
 	// Gradients of loss w.r.t. unnormalized quaternion
-	float4* dL_drot = (float4*)(dL_drots);
-	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };
+	// float4* dL_drot = (float4*)(dL_drots + idx);
+    
+	*dL_drots = { dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
+
+    if((*dL_drots).x != 0 || (*dL_drots).y != 0 || (*dL_drots).z != 0 || (*dL_drots).w != 0){
+        float4 dL_drots_un = dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
+        // printf("normalized rotation: x: %g, y: %g, z: %g, w: %g, \nunnormalized rotation: x: %g, y: %g, z: %g, w: %g, \n\n", (*dL_drots).x,(*dL_drots).y,(*dL_drots).z, (*dL_drots).w, dL_drots_un.x,dL_drots_un.y,dL_drots_un.z, dL_drots_un.w);
+
+    }
 }
 
 template<int C>
@@ -609,6 +699,167 @@ __device__ void preprocessCUDA_device(
 		computeCov3D_device(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 }
 
+template<uint32_t C>
+__global__
+void testing_gradients(
+    float* b, 
+    float* J,
+    float* loss_residuals, 
+    uint32_t N, 
+    uint32_t M,
+    int P, 
+    int D, 
+    int max_coeffs, // max_coeffs = M
+    const float* means3D, //const float3* means3D,
+    const int* radii,
+    const float* dc,
+    const float* shs,
+    const bool* clamped,
+    const float* opacities,
+    const float* scales, //const glm::vec3* scales,
+    const float* rotations, //const glm::vec4* rotations,
+    const float scale_modifier,
+    const float* cov3Ds,
+    const float* viewmatrix,
+    const float* projmatrix,
+    const float focal_x, float focal_y,
+    const float tan_fovx, float tan_fovy,
+    const float* campos, //const glm::vec3* campos,
+    bool antialiasing
+    ){
+        uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= P*M) return;
+
+    int x = idx % P;  // Gaussian index
+    int y = idx / P;  // Pixel index
+
+    // Calculate the residuals wrt parameters
+    int index= x + y * P;
+    float dL_dmean2D_x = J[index*10];
+	float dL_dmean2D_y = J[index*10 + 1];
+	float dL_dconic2D_x = J[index*10 + 2] ;
+	float dconic2D_y = J[index*10 + 3];
+	float dL_dconic2D_w = J[index*10 + 4];
+    float dL_dconics[4] = {dL_dconic2D_x, dconic2D_y, 0.0f, dL_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+	float dr_dopacity = J[index*10 + 5];
+    float3 dr_dmean2D = {dL_dmean2D_x, dL_dmean2D_y, 0.0f};
+
+    float dL_dcolors[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dL_dcolors[ch] = J[index*10 + ch + 6];
+    }
+    float dL_dinvdepths = J[index*10 + 9];
+
+
+    float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+    glm::vec4 dr_drot = glm::vec4(0.0f);
+    glm::vec3 dr_dscale = glm::vec3(0.0f);
+    // float dr_dopacity;  
+    glm::vec3 dr_ddc = glm::vec3(0.0f);
+    glm::vec3 dr_dsh[15] = {};  
+    float dr_dcov3D[6] = {}; 
+
+    computeCov2DCUDA_device(
+        P,
+        (float3*)means3D,
+        radii,
+        cov3Ds,
+        focal_x, focal_y,
+        tan_fovx, tan_fovy,
+        viewmatrix,
+        opacities,
+        &dL_dconics[0],
+        &dr_dopacity,
+        &dL_dinvdepths,
+        &dr_dmean,
+        &dr_dcov3D[0],
+        antialiasing,
+        x
+    );
+
+    preprocessCUDA_device<C>(
+        P, D, max_coeffs,
+        (float3*)means3D,
+        radii,
+        dc,
+        shs,
+        clamped,
+        (glm::vec3*)scales,
+        (glm::vec4*)rotations,
+        scale_modifier,
+        projmatrix,
+        (glm::vec3*)campos,
+        &dr_dmean2D,
+        (glm::vec3*)&dr_dmean,
+        &dL_dcolors[0],
+        &dr_dcov3D[0],
+        &dr_ddc[0],
+        (float*)&dr_dsh[0],
+        &dr_dscale,
+        &dr_drot,
+        &dr_dopacity,
+        x
+    );
+
+    const int num_params_per_gauss = 59;
+    float residual = loss_residuals[y];
+
+    
+
+    glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+    dr_dscale.x = dr_dscale.x * scale.x;
+    dr_dscale.y = dr_dscale.y * scale.y;
+    dr_dscale.z = dr_dscale.z * scale.z;
+
+    float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+    dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+
+    glm::vec4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+
+    // float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+    // dr_drot.x = dr_drot_un.x;
+    // dr_drot.y = dr_drot.y * glm::length(rot_original);
+    // dr_drot.z = dr_drot_un.z;
+    // dr_drot.w = dr_drot_un.w;
+
+    // glm::vec4 dr_drot_2 = glm::vec4(0.0f);
+
+
+    atomicAdd(&b[x * num_params_per_gauss + 0], dr_dmean.x);
+    atomicAdd(&b[x * num_params_per_gauss + 1], dr_dmean.y);
+    atomicAdd(&b[x * num_params_per_gauss + 2], dr_dmean.z);
+
+    atomicAdd(&b[x * num_params_per_gauss + 3], dr_dscale.x);
+    atomicAdd(&b[x * num_params_per_gauss + 4], dr_dscale.y);
+    atomicAdd(&b[x * num_params_per_gauss + 5], dr_dscale.z);
+
+    atomicAdd(&b[x * num_params_per_gauss + 6], dr_drot.x);
+    atomicAdd(&b[x * num_params_per_gauss + 7], dr_drot.y);
+    atomicAdd(&b[x * num_params_per_gauss + 8], dr_drot.z);
+    atomicAdd(&b[x * num_params_per_gauss + 9], dr_drot.w);
+
+    atomicAdd(&b[x * num_params_per_gauss + 10], dr_dopacity);
+
+    atomicAdd(&b[x * num_params_per_gauss + 11], dr_ddc.x);
+    atomicAdd(&b[x * num_params_per_gauss + 12], dr_ddc.y);
+    atomicAdd(&b[x * num_params_per_gauss + 13], dr_ddc.z);
+
+    for(int i = 0; i < 6; i++){
+        atomicAdd(&b[x * num_params_per_gauss + 14 + i], dr_dcov3D[i]);
+    }
+
+    atomicAdd(&b[x * num_params_per_gauss + 20], dL_dconics[0]);
+    atomicAdd(&b[x * num_params_per_gauss + 21], dL_dconics[1]);
+    atomicAdd(&b[x * num_params_per_gauss + 22], dL_dconics[2]);
+    atomicAdd(&b[x * num_params_per_gauss + 23], dL_dconics[3]);
+
+
+    // for(int i = 0; i < max_coeffs; i++){
+    //     atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 0], dr_dsh[i].x);
+    //     atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 1], dr_dsh[i].y);
+    //     atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 2], dr_dsh[i].z);
+    // }
+}
 
 template<uint32_t C>
 __global__
@@ -645,30 +896,30 @@ void calc_b_non_sparse(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
+    // Calculate the residuals wrt parameters
     int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-    float dr_dmean2D_y = J[index*10 + 1];
-    float dr_dconic2D_x = J[index*10 + 2] ;
-    float dr_conic2D_y = J[index*10 + 3];
-    float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-    float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+    float dL_dmean2D_x = J[index*10];
+	float dL_dmean2D_y = J[index*10 + 1];
+	float dL_dconic2D_x = J[index*10 + 2] ;
+	float dconic2D_y = J[index*10 + 3];
+	float dL_dconic2D_w = J[index*10 + 4];
+    float dL_dconics[4] = {dL_dconic2D_x, dconic2D_y, 0.0f, dL_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+	float dr_dopacity = J[index*10 + 5];
+    float3 dr_dmean2D = {dL_dmean2D_x, dL_dmean2D_y, 0.0f};
 
-    float dr_dcolors[C] = {0.0f};
+    float dL_dcolors[C] = {0.0f};
     for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
+        dL_dcolors[ch] = J[index*10 + ch + 6];
     }
-    float dr_dinvdepths = J[index*10 + 9];
+    float dL_dinvdepths = J[index*10 + 9];
 
 
     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
     glm::vec4 dr_drot = glm::vec4(0.0f);
     glm::vec3 dr_dscale = glm::vec3(0.0f);
+    // float dr_dopacity;  
     glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+    glm::vec3 dr_dsh[15] = {};  
     float dr_dcov3D[6] = {}; 
 
     computeCov2DCUDA_device(
@@ -680,9 +931,9 @@ void calc_b_non_sparse(
         tan_fovx, tan_fovy,
         viewmatrix,
         opacities,
-        &dr_dconics[0],
+        &dL_dconics[0],
         &dr_dopacity,
-        &dr_dinvdepths,
+        &dL_dinvdepths,
         &dr_dmean,
         &dr_dcov3D[0],
         antialiasing,
@@ -703,7 +954,7 @@ void calc_b_non_sparse(
         (glm::vec3*)campos,
         &dr_dmean2D,
         (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
+        &dL_dcolors[0],
         &dr_dcov3D[0],
         &dr_ddc[0],
         (float*)&dr_dsh[0],
@@ -715,6 +966,23 @@ void calc_b_non_sparse(
 
     const int num_params_per_gauss = 59;
     float residual = loss_residuals[y];
+
+    // if(x == 0 && dr_dmean.x != 0){
+    //     // printf("dr_dmean.x not zero: %g  residual: %g \n", dr_dmean.x, residual);
+    //     printf("dL_dcolors x: %g  y: %g  z: %g \n", dL_dcolors[0], dL_dcolors[1], dL_dcolors[2]);
+    // }
+
+    // if(x == 0 && dr_dmean.x != 0){
+    //     printf(" res[%d]  dr_dmean.x: %g  residual: %g , dr_dsh[0].x: %g \n", y, dr_dmean.x, residual, dr_dsh[0].x);
+    // }
+    
+    // if(x == 0){
+    //     printf("residual: %g , dr_dsh[0].x: %g \n", residual, dr_dsh[0].x);
+    // }
+
+    // if(x == 0 && dL_dcolors[0] != 0){
+    //     printf("dL_dcolors x: %g  y: %g  z: %g");
+    // }
 
     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
     dr_dscale.x = dr_dscale.x * scale.x;
@@ -731,6 +999,13 @@ void calc_b_non_sparse(
     dr_drot.y = dr_drot_un.y;
     dr_drot.z = dr_drot_un.z;
     dr_drot.w = dr_drot_un.w;
+
+    // if(isnan(-dr_dmean.x * residual)){
+    //     printf("residual id: %d , ", y);
+    //     printf("dr_dmean.x: %g, dr_dmean.y: %g, dr_dmean.z: %g", dr_dmean.x, dr_dmean.y, dr_dmean.z );
+    //     printf("residual: %g", residual);
+    // }
+
 
 
     atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
@@ -753,9 +1028,9 @@ void calc_b_non_sparse(
     atomicAdd(&b[x * num_params_per_gauss + 13], -dr_ddc.z * residual);
 
     for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], -dr_dsh[i].x * residual);
-        atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], -dr_dsh[i].y * residual);
-        atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], -dr_dsh[i].z * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 0], -dr_dsh[i].x * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 1], -dr_dsh[i].y * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 + 2], -dr_dsh[i].z * residual);
     }
     
     
@@ -763,7 +1038,7 @@ void calc_b_non_sparse(
 
 template<uint32_t C>
 __global__
-void residual_dot_sum(
+void residual_dot_sum_temp(
     float* J, 
     float* v, 
     float* residual_dot_v, 
@@ -795,30 +1070,28 @@ void residual_dot_sum(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
+    // Calculate the residuals wrt parameters
     int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+    float dL_dmean2D_x = J[index*10];
+	float dL_dmean2D_y = J[index*10 + 1];
+	float dL_dconic2D_x = J[index*10 + 2] ;
+	float dconic2D_y = J[index*10 + 3];
+	float dL_dconic2D_w = J[index*10 + 4];
+    float dL_dconics[4] = {dL_dconic2D_x, dconic2D_y, 0.0f, dL_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
 	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+    float3 dr_dmean2D = {dL_dmean2D_x, dL_dmean2D_y, 0.0f};
 
-    float dr_dcolors[C] = {0.0f};
+    float dL_dcolors[C] = {0.0f};
     for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
+        dL_dcolors[ch] = J[index*10 + ch + 6];
     }
-    float dr_dinvdepths = J[index*10 + 9];
-
+    float dL_dinvdepths = J[index*10 + 9];
 
     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
     glm::vec4 dr_drot = glm::vec4(0.0f);
     glm::vec3 dr_dscale = glm::vec3(0.0f);
     glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;   
+    glm::vec3 dr_dsh[15] = {};  
     float dr_dcov3D[6] = {}; 
 
     computeCov2DCUDA_device(
@@ -830,9 +1103,9 @@ void residual_dot_sum(
         tan_fovx, tan_fovy,
         viewmatrix,
         opacities,
-        &dr_dconics[0],
+        &dL_dconics[0],
         &dr_dopacity,
-        &dr_dinvdepths,
+        &dL_dinvdepths,
         &dr_dmean,
         &dr_dcov3D[0],
         antialiasing,
@@ -853,7 +1126,7 @@ void residual_dot_sum(
         (glm::vec3*)campos,
         &dr_dmean2D,
         (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
+        &dL_dcolors[0],
         &dr_dcov3D[0],
         &dr_ddc[0],
         (float*)&dr_dsh[0],
@@ -862,6 +1135,7 @@ void residual_dot_sum(
         &dr_dopacity,
         x
     );
+
 
     const int num_params_per_gauss = 59;
 
@@ -902,9 +1176,9 @@ void residual_dot_sum(
     atomicAdd(&residual_dot_v[y], dr_ddc.z * v[x * num_params_per_gauss + 13]);
 
     for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
+        atomicAdd(&residual_dot_v[y], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3 + 0]);
+        atomicAdd(&residual_dot_v[y], dr_dsh[i].y * v[x * num_params_per_gauss + 14 + i * 3 + 1]);
+        atomicAdd(&residual_dot_v[y], dr_dsh[i].z * v[x * num_params_per_gauss + 14 + i * 3 + 2]);
     }
 
 
@@ -912,7 +1186,7 @@ void residual_dot_sum(
 
 template<uint32_t C>
 __global__
-void sum_residuals(
+void sum_residuals_temp(
     float* Av, 
     float* residual_dot_v, 
     float* J, 
@@ -944,31 +1218,34 @@ void sum_residuals(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
+    // Calculate the residuals wrt parameters
     int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+    float dL_dmean2D_x = J[index*10];
+	float dL_dmean2D_y = J[index*10 + 1];
+	float dL_dconic2D_x = J[index*10 + 2] ;
+	float dconic2D_y = J[index*10 + 3];
+	float dL_dconic2D_w = J[index*10 + 4];
+    float dL_dconics[4] = {dL_dconic2D_x, dconic2D_y, 0.0f, dL_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
 	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+    float3 dr_dmean2D = {dL_dmean2D_x, dL_dmean2D_y, 0.0f};
 
-    float dr_dcolors[C] = {0.0f};
+    float dL_dcolors[C] = {0.0f};
     for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
+        dL_dcolors[ch] = J[index*10 + ch + 6];
     }
-    float dr_dinvdepths = J[index*10 + 9];
-
+    float dL_dinvdepths = J[index*10 + 9];
 
     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
     glm::vec4 dr_drot = glm::vec4(0.0f);
     glm::vec3 dr_dscale = glm::vec3(0.0f);
     glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+    glm::vec3 dr_dsh[15] = {};  
     float dr_dcov3D[6] = {}; 
+
+    // if(isnan(dr_dmean.x) && y == 0){
+    //     printf("DR_DMEAN3D: %g , DR_DMEAN2D: %g,  [%d]\n", dr_dmean.x, dr_dmean2D.x, index);
+    // }
+    
 
     computeCov2DCUDA_device(
         P,
@@ -979,14 +1256,18 @@ void sum_residuals(
         tan_fovx, tan_fovy,
         viewmatrix,
         opacities,
-        &dr_dconics[0],
+        &dL_dconics[0],
         &dr_dopacity,
-        &dr_dinvdepths,
+        &dL_dinvdepths,
         &dr_dmean,
         &dr_dcov3D[0],
         antialiasing,
         x
     );
+
+    // if(isnan(dr_dmean.x) && y == 0){
+    //     printf("DR_DMEAN3D: %g , DR_DMEAN2D: %g, radii: %d,  [%d]\n", dr_dmean.x, dr_dmean2D.x, radii[x], index);
+    // }
 
     preprocessCUDA_device<C>(
         P, D, max_coeffs,
@@ -1002,7 +1283,7 @@ void sum_residuals(
         (glm::vec3*)campos,
         &dr_dmean2D,
         (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
+        &dL_dcolors[0],
         &dr_dcov3D[0],
         &dr_ddc[0],
         (float*)&dr_dsh[0],
@@ -1013,6 +1294,12 @@ void sum_residuals(
     );
 
     const int num_params_per_gauss = 59;
+
+    // if(isnan(dr_dmean.x) && y == 0){
+    //     printf("DR_DMEAN3D: %g , DR_DMEAN2D: %g,  [%d]\n", dr_dmean.x, dr_dmean2D.x, index);
+    // }
+
+    // atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y]);
 
     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
     dr_dscale.x = dr_dscale.x * scale.x;
@@ -1052,15 +1339,15 @@ void sum_residuals(
     atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[y]);
 
     for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[y]);
-        atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[y]);
-        atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3 + 0], dr_dsh[i].x * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3 + 1], dr_dsh[i].y * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3 + 2], dr_dsh[i].z * residual_dot_v[y]);
     }
     
 }
 
 
-void Av(
+void Av_temp(
     float* J, 
     float* v, 
     float* Av, 
@@ -1090,7 +1377,7 @@ void Av(
     cudaMalloc(&residual_dot_v, M * sizeof(float));
     cudaMemset(residual_dot_v, 0, M * sizeof(float));
     
-    residual_dot_sum<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
+    residual_dot_sum_temp<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
         J, 
         v, 
         residual_dot_v, 
@@ -1120,7 +1407,7 @@ void Av(
     );    // (r(i)^T * p)
 
 
-    sum_residuals<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
+    sum_residuals_temp<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
         Av, 
         residual_dot_v, 
         J, 
@@ -1154,7 +1441,7 @@ void Av(
 
 template<uint32_t C>
 __global__ 
-void diagJTJ(
+void diagJTJ_temp(
     const float* J, 
     float* M_precon, 
     uint32_t N, 
@@ -1181,35 +1468,36 @@ void diagJTJ(
 ){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= P*M) return;
-
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
 
-    float dr_dcolors[C] = {0.0f};
+    // Calculate the residuals wrt parameters
+    int index= x + y * P;
+    float dL_dmean2D_x = J[index*10];
+	float dL_dmean2D_y = J[index*10 + 1];
+	float dL_dconic2D_x = J[index*10 + 2] ;
+	float dconic2D_y = J[index*10 + 3];
+	float dL_dconic2D_w = J[index*10 + 4];
+    float dL_dconics[4] = {dL_dconic2D_x, dconic2D_y, 0.0f, dL_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+	float dr_dopacity = J[index*10 + 5];
+    float3 dr_dmean2D = {dL_dmean2D_x, dL_dmean2D_y, 0.0f};
+
+    float dL_dcolors[C] = {0.0f};
     for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
+        dL_dcolors[ch] = J[index*10 + ch + 6];
     }
-    float dr_dinvdepths = J[index*10 + 9];
+    float dL_dinvdepths = J[index*10 + 9];
+
 
 
     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
     glm::vec4 dr_drot = glm::vec4(0.0f);
     glm::vec3 dr_dscale = glm::vec3(0.0f);
     glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+    glm::vec3 dr_dsh[15] = {};  
     float dr_dcov3D[6] = {}; 
+
 
     computeCov2DCUDA_device(
         P,
@@ -1220,9 +1508,9 @@ void diagJTJ(
         tan_fovx, tan_fovy,
         viewmatrix,
         opacities,
-        &dr_dconics[0],
+        &dL_dconics[0],
         &dr_dopacity,
-        &dr_dinvdepths,
+        &dL_dinvdepths,
         &dr_dmean,
         &dr_dcov3D[0],
         antialiasing,
@@ -1243,7 +1531,7 @@ void diagJTJ(
         (glm::vec3*)campos,
         &dr_dmean2D,
         (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
+        &dL_dcolors[0],
         &dr_dcov3D[0],
         &dr_ddc[0],
         (float*)&dr_dsh[0],
@@ -1252,6 +1540,16 @@ void diagJTJ(
         &dr_dopacity,
         x
     );
+
+
+
+    // float j_val = J[x + y * N];
+
+    // float tmp = j_val * j_val;
+
+    // atomicAdd(&M_precon[x],tmp);
+
+    // dr_dmean = grad_sigmoid(dr_dmean)
 
     const int num_params_per_gauss = 59;
 
@@ -1270,8 +1568,6 @@ void diagJTJ(
     dr_drot.y = dr_drot_un.y;
     dr_drot.z = dr_drot_un.z;
     dr_drot.w = dr_drot_un.w;
-
-
 
     atomicAdd(&M_precon[x * num_params_per_gauss + 0], dr_dmean.x * dr_dmean.x);
     atomicAdd(&M_precon[x * num_params_per_gauss + 1], dr_dmean.y * dr_dmean.y);
@@ -1293,12 +1589,35 @@ void diagJTJ(
     atomicAdd(&M_precon[x * num_params_per_gauss + 13], dr_ddc.z * dr_ddc.z);
 
     for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * dr_dsh[i].x);
-        atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * dr_dsh[i].y);
-        atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * dr_dsh[i].z);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3 + 0], dr_dsh[i].x * dr_dsh[i].x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3 + 0], dr_dsh[i].y * dr_dsh[i].y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3 + 0], dr_dsh[i].z * dr_dsh[i].z);
     }
 
+    // atomicAdd(&M_precon[y], dr_dmean.x * dr_dmean.x);
+    // atomicAdd(&M_precon[y], dr_dmean.y * dr_dmean.y);
+    // atomicAdd(&M_precon[y], dr_dmean.z * dr_dmean.z);
 
+    // atomicAdd(&M_precon[y], dr_dscale.x * dr_dscale.x);
+    // atomicAdd(&M_precon[y], dr_dscale.y * dr_dscale.y);
+    // atomicAdd(&M_precon[y], dr_dscale.z * dr_dscale.z);
+
+    // atomicAdd(&M_precon[y], dr_drot.x * dr_drot.x);
+    // atomicAdd(&M_precon[y], dr_drot.y * dr_drot.y);
+    // atomicAdd(&M_precon[y], dr_drot.z * dr_drot.z);
+    // atomicAdd(&M_precon[y], dr_drot.w * dr_drot.w);
+
+    // atomicAdd(&M_precon[y], dr_dopacity * dr_dopacity);
+
+    // atomicAdd(&M_precon[y], dr_ddc.x * dr_ddc.x);
+    // atomicAdd(&M_precon[y], dr_ddc.y * dr_ddc.y);
+    // atomicAdd(&M_precon[y], dr_ddc.z * dr_ddc.z);
+
+    // for(int i = 0; i < max_coeffs; i++){
+    //     atomicAdd(&M_precon[y], dr_dsh[i].x * dr_dsh[i].x);
+    //     atomicAdd(&M_precon[y], dr_dsh[i].y * dr_dsh[i].y);
+    //     atomicAdd(&M_precon[y], dr_dsh[i].z * dr_dsh[i].z);
+    // }
 }
 
 
@@ -1339,8 +1658,8 @@ void GaussNewton::gaussNewtonUpdate(
     uint64_t* sparse_J_indices,
     uint32_t* sparse_J_p_sum,
     float* loss_residuals,
-    float param_gamma,
-    float param_alpha,
+    float gamma,
+    float alpha,
     const bool* tiles_touched,
     const uint32_t N, // number of parameters
     const uint32_t M,  // number of residuals
@@ -1360,24 +1679,68 @@ void GaussNewton::gaussNewtonUpdate(
 
     float h_float;
 
-    float* J = sparse_J_values;
+     
 
-    printf("tot num params: %d \n", N);
-    printf("tot num gaussians: %d \n", P);
-    printf("tot num residuals: %d \n", M);
-    printf("D: %d \n", D);
     
-    
+    // b = JTv (v = r) = JTr, b=-JTr
+    float* J = sparse_J_values;
+    // for(int i = 0; i < 11*59; i++){
+    //     cudaMemcpy(&h_float, &J[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("J(%d): %g \n",i, h_float);
+    // }
+
+
     float* b;
     cudaMalloc(&b, N * sizeof(float));
     cudaMemset(b,0, N * sizeof(float));
+    printf("tot num params: %d \n", N);
+    printf("tot num gaussians: %d \n", P);
+    printf("tot num residuals: %d \n", M);
 
-    // for(int i = 0; i < M; i++){
-    //     int index = i * 59 + 55;
-    //     cudaMemcpy(&h_float, &b[index], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("J(%d): %g  | %s \n",i, h_float);
-    // }
+    testing_gradients<NUM_CHANNELS_3DGS><<<(P*M+255)/256, 256>>>(
+        b,
+        J, 
+        loss_residuals, 
+        N, 
+        M, 
+        P, 
+        D, 
+        max_coeffs, 
+        means3D, 
+        radii, 
+        dc, 
+        shs, 
+        clamped, 
+        opacities, 
+        scales, 
+        rotations, 
+        scale_modifier, 
+        cov3Ds, 
+        viewmatrix, 
+        projmatrix, 
+        focal_x, 
+        focal_y, 
+        tan_fovx, 
+        tan_fovy, 
+        campos, 
+        antialiasing
+    );
+	glm::vec4 test_val;
 
+    cudaMemcpy(&test_val, &rotations[0], sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+	printf("rot.x: %g,rot.y: %g,rot.z: %g,rot.w: %g,\n",  test_val.x, test_val.y, test_val.z, test_val.w);
+
+    for(int i = 0; i < 6; i++){
+        cudaMemcpy(&h_float, &cov3Ds[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("cov3Ds(%d): %g \n",i, h_float);
+    }
+
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
+
+    return;
 
     calc_b_non_sparse<NUM_CHANNELS_3DGS><<<(P*M+255)/256, 256>>>(
         b,
@@ -1408,67 +1771,82 @@ void GaussNewton::gaussNewtonUpdate(
         antialiasing
     );
 
-    // for(int i = 0; i < N; i++){
-    //     cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    // printf("Max coeffs: %d", max_coeffs);
+    printf("hej \n");
+
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
+
+
+    // return;
+    // r(0) = b
+    float* dev_r;
+    cudaMalloc(&dev_r, N * sizeof(float));
+    gpu_copy<<<(N+255)/256, 256>>>(b, dev_r, N);
+
+    // calculate A*x(0)
+    float* dev_Ax0;
+    cudaMalloc(&dev_Ax0, N * sizeof(float));
+    cudaMemset(dev_Ax0, 0, N * sizeof(float));
+
+    // for(int i = 0; i < 100; i++){
+    //     cudaMemcpy(&h_float, &dev_Ax0[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("Ax0_prev(%d): %g \n",i, h_float);
     // }
+    // Av(J, x, dev_Ax0, N, M); //Ax
+    // Av_temp(
+    //     J, 
+    //     x, 
+    //     dev_Ax0, 
+    //     N, 
+    //     M,
+    //     P, 
+    //     D, 
+    //     max_coeffs, 
+    //     means3D, 
+    //     radii, 
+    //     dc, 
+    //     shs, 
+    //     clamped, 
+    //     opacities, 
+    //     scales, 
+    //     rotations, 
+    //     scale_modifier, 
+    //     cov3Ds, 
+    //     viewmatrix, 
+    //     projmatrix, 
+    //     focal_x, 
+    //     focal_y, 
+    //     tan_fovx, 
+    //     tan_fovy, 
+    //     campos, 
+    //     antialiasing
+    // ); //Ax
 
-
-
-    float* Ap;
-    cudaMalloc(&Ap, N * sizeof(float));
-    cudaMemset(Ap, 0, N * sizeof(float));
-
-    Av(
-        J,
-        x,
-        Ap,
-        N,
-        M,
-        P, 
-        D, 
-        max_coeffs, 
-        means3D, 
-        radii, 
-        dc, 
-        shs, 
-        clamped, 
-        opacities, 
-        scales, 
-        rotations, 
-        scale_modifier, 
-        cov3Ds, 
-        viewmatrix, 
-        projmatrix, 
-        focal_x, 
-        focal_y, 
-        tan_fovx, 
-        tan_fovy, 
-        campos, 
-        antialiasing
-    );
-
-
+    // for(int i = 0; i < 100; i++){
+    //     cudaMemcpy(&h_float, &dev_Ax0[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("Ax0(%d): %g \n",i, h_float);
+    // }
 
     // r(0) = b - A*x(0)
-    float* r;
-    cudaMalloc(&r, N * sizeof(float));
-    cudaMemset(r, 0, N * sizeof(float));
-    subtract<<<(N+255)/256, 256>>>(b, Ap, r, N);
+    subtract<<<(N+255)/256, 256>>>(dev_r, dev_Ax0, dev_r, N);
 
-    // for(int i = 0; i < N; i++){
-    //     cudaMemcpy(&h_float, &r[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("r(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
-    // }
-
-    
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
 
 
     // calculate M = diag(J^T * J)
     float* M_precon;
     cudaMalloc(&M_precon, N * sizeof(float));
     cudaMemset(M_precon, 0, N * sizeof(float));
-    diagJTJ<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
+    dim3 threadsPerBlock(256); // thread block size: 256
+    dim3 numBlocks(((N*M)+255)/256); 
+    // diagJTJ<<<numBlocks, threadsPerBlock>>>(J, M_precon, N, M);
+    diagJTJ_temp<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
         J, 
         M_precon, 
         N, 
@@ -1496,66 +1874,117 @@ void GaussNewton::gaussNewtonUpdate(
         antialiasing
     );
 
-    // z(0) = M^-1 * r(0)
-    float* z;
-    cudaMalloc(&z, N * sizeof(float));
-    next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+    // for(int i = 0; i < 100; i++){
+    //     cudaMemcpy(&h_float, &dev_r[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("r(%d): %g \n",i, h_float);
+    // }
 
+    // for(int i = 0; i < 11*59; i++){
+    //     cudaMemcpy(&h_float, &M_precon[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("M_precon(%d): %g \n",i, h_float);
+    // }
+    
+    // z(0) = M^-1 * r(0)
+    float* dev_z;
+    cudaMalloc(&dev_z, N * sizeof(float));
+    next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
+
+    // float h_float;
+    // for(int i = 0; i < 100; i++){
+    //     cudaMemcpy(&h_float, &dev_z[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("z(%d): %g \n",i, h_float);
+    // }
 
     // p(0) = z(0)
-    float* p;
-    cudaMalloc(&p, N * sizeof(float));
-    cudaMemcpy(p, z, N * sizeof(float), cudaMemcpyDeviceToDevice);
+    float* dev_p;
+    cudaMalloc(&dev_p, N * sizeof(float));
+    // gpu_copy<<<(N+255)/256, 256>>>(dev_z, dev_p, N); //#change back
+    cudaMemcpy(dev_p, dev_r, N*sizeof(float), cudaMemcpyDeviceToDevice);
 
+    // for(int i = 0; i < 100; i++){
+    //     cudaMemcpy(&h_float, &dev_p[i], sizeof(float), cudaMemcpyDeviceToHost);
+    //     printf("p(%d): %g \n",i, h_float);
+    // }
     
-    float eps = 1e-8;
-    float h_R;
-    float h_R_prev;
-    float* R;
-    float* R_prev;
     
-    cudaMalloc(&R, sizeof(float));
-    cudaMalloc(&R_prev, sizeof(float));
-    cudaMemset(R, 0, sizeof(float));
-    cudaMemset(R_prev, 0, sizeof(float));
+    float eps = 0.00000001;
+    float* h_R;
+    float* h_R_prev;
+    float* dev_R;
+    float* dev_R_prev;
+    
+    cudaMalloc(&dev_R, sizeof(float));
+    cudaMalloc(&dev_R_prev, sizeof(float));
+
+    float* dev_Ap;
+    cudaMalloc(&dev_Ap, N * sizeof(float));
+    
+    h_R = (float *)malloc(sizeof(float));
+    h_R_prev = (float *)malloc(sizeof(float));
+
+    cudaMemset(dev_R, 0, sizeof(float));
+    cudaMemset(dev_R_prev, 0, sizeof(float));
     
 
     // R_prev = r(0)^T * r(0)
-    dot<<<(N+255)/256, 256>>>(r, r, R_prev, N);
+    dot<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_R_prev, N);
     
-    float* alpha;
-    float* numerator;
-    float* denominator;
-    float* beta;
-    cudaMalloc(&alpha, sizeof(float));
-    cudaMalloc(&numerator, sizeof(float));
-    cudaMalloc(&denominator, sizeof(float));
-    cudaMalloc(&beta, sizeof(float));
+    float* dev_alpha;
+    double* dev_denominator;
+    double* dev_numerator;
+    float* dev_beta;
+    cudaMalloc(&dev_alpha, sizeof(float));
+    cudaMalloc(&dev_denominator, sizeof(double));
+    cudaMalloc(&dev_numerator, sizeof(double));
+    cudaMalloc(&dev_beta, sizeof(float));
 
     
     int k = 0; 
     const int MAX_ITERATIONS = 10;
-    cudaMemcpy(&h_R_prev, R_prev, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_R_prev, dev_R_prev, sizeof(float), cudaMemcpyDeviceToHost);
 
     
     while(k < MAX_ITERATIONS){
 
-        cudaMemset(alpha, 0, sizeof(float));
-        cudaMemset(denominator, 0, sizeof(float));
-        cudaMemset(numerator, 0, sizeof(float));
-        cudaMemset(beta, 0, sizeof(float));
-        cudaMemset(Ap, 0, N * sizeof(float));
+        cudaMemset(dev_alpha, 0, sizeof(float));
+        cudaMemset(dev_denominator, 0, sizeof(float));
+        cudaMemset(dev_numerator, 0, sizeof(double));
+        cudaMemset(dev_beta, 0, sizeof(float));
+        cudaMemset(dev_Ap, 0, N * sizeof(float));
 
+        // float h_float;
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &dev_r[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("r(%d): %g \n",i, h_float);
+        // }   
+
+        // float h_float;
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &dev_z[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("z(%d): %g \n",i, h_float);
+        // }   
 
         // r(k)^T * z(k)
-        dot<<<(N+255)/256, 256>>>(r, z, numerator, N);
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N);
 
+        // r(k)^T * r(k)
+        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_numerator, N);
 
+        // float h_float;
+        double h_double;
+        // cudaMemcpy(&h_double, dev_numerator, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("numerator(%d): %g \n",0, h_double);
+
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &J[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("J(%d): %g \n",i, h_float);
+        // }
         // A*p(k)
-        Av(
+        // Av(J, dev_p, dev_Ap, N, M);
+        Av_temp(
             J, 
-            p, 
-            Ap, 
+            dev_p, 
+            dev_Ap, 
             N, 
             M,
             P, 
@@ -1581,73 +2010,109 @@ void GaussNewton::gaussNewtonUpdate(
             antialiasing
         );
 
+        // float h_float;
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &dev_Ap[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("Ap(%d): %g \n",i, h_float);
+        // }
+
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &dev_p[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("p(%d): %g \n",i, h_float);
+        // }
+
         
         // p(k)^T * Ap(k) 
-        dot<<<(N+255)/256, 256>>>(p, Ap, denominator, N);
+        dot_d<<<(N+255)/256, 256>>>(dev_p, dev_Ap, dev_denominator, N);
 
-       
-        // alpha = r(k)^T * z(k) / p(k)^T * Ap(k) 
-        scalar_divide<<<1, 1>>>(numerator, denominator, alpha); 
+        // float h_float;
+        // cudaMemcpy(&h_double, dev_numerator, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("numerator(%d): %g \n",0, h_double);
 
         
+        // cudaMemcpy(&h_double, dev_denominator, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("denomenator(%d): %g \n",0, h_double);
+       
+        // alpha = r(k)^T * z(k) / p(k)^T * Ap(k) 
+        scalar_divide_double<<<1, 1>>>(dev_numerator, dev_denominator, dev_alpha); 
+
+        float h_float_a;
+        // cudaMemcpy(&h_float_a, dev_alpha, sizeof(float), cudaMemcpyDeviceToHost);
+        // printf("alpha(%d): %g \n",0, h_float_a);
+        
         // x(k+1) = x + alpha * p
-        next_x<<<(N+255)/256, 256>>>(x, p, alpha, N);
+        next_x<<<(N+255)/256, 256>>>(x, dev_p, dev_alpha, N);
+
+        // float h_float;
+        // for(int i = 0; i < 100; i++){
+        //     cudaMemcpy(&h_float, &x[i], sizeof(float), cudaMemcpyDeviceToHost);
+        //     printf("x(%d): %g \n",i, h_float);
+        // }
 
 
         // r(k)^T * z(k)  (used for beta calculation)
-        cudaMemset(denominator, 0, sizeof(float));
-        dot<<<(N+255)/256, 256>>>(r, z, denominator, N); 
+        cudaMemset(dev_denominator, 0, sizeof(float));
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_denominator, N); 
 
+        // r(k)^T * r(k)  (used for beta calculation)
+        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_denominator, N); 
 
         // r(k+1) = r(k) - alpha * Ap(k)
-        next_r<<<(N+255)/256, 256>>>(r, Ap, alpha, N);
+        next_r<<<(N+255)/256, 256>>>(dev_r, dev_Ap, dev_alpha, N);
 
         // R = r(k+1)^T * r(k+1)
-        cudaMemset(R, 0, sizeof(float));
-        dot<<<(N+255)/256, 256>>>(r, r, R, N); 
+        cudaMemset(dev_R, 0, sizeof(float));
+        dot<<<(N+255)/256, 256>>>(dev_r, dev_r, dev_R, N); 
         
         // Check if R/Rprev > 0.85 or R < eps
-        cudaMemcpy(&h_R, R, sizeof(float), cudaMemcpyDeviceToHost);
-        // printf("R: %g, Rprev: %g \n", *h_R, *h_R_prev);
-        printf("R/R_prev: %g \n", (h_R/ h_R_prev));
-        if (h_R < eps || h_R/ h_R_prev > 0.85f){
-            break;
-        }
+        cudaMemcpy(h_R, dev_R, sizeof(float), cudaMemcpyDeviceToHost);
+        printf("R: %g, Rprev: %g \n", *h_R, *h_R_prev);
+        printf("R/R_prev: %g \n", (*h_R/ *h_R_prev));
+        // if (*h_R/ *h_R_prev > 0.85f){
+        //     break;
+        // }
         
-        h_R_prev = h_R;
+        *h_R_prev = *h_R;
 
         // z(k+1) = M^-1 * r(k)
-        next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+        // next_z<<<(N+255)/256, 256>>>(M_precon, dev_r, dev_z, N);
         
         // r(k+1)^T * z(k+1)
-        cudaMemset(numerator, 0, sizeof(float));
-        dot<<<(N+255)/256, 256>>>(r, z, numerator, N); 
+        cudaMemset(dev_numerator, 0, sizeof(float));
+        // dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); 
+
+        // r(k+1)^T * r(k+1)
+        dot_d<<<(N+255)/256, 256>>>(dev_r, dev_z, dev_numerator, N); 
         
         // beta = r(k+1)^T * z(k+1) / r(k)^T * z(k)
-        scalar_divide<<<1, 1>>>(numerator, denominator, beta); 
+        scalar_divide_double<<<1, 1>>>(dev_numerator, dev_denominator, dev_beta); 
 
         // p(k+1) = z(k) + beta * p(k)
-        next_p<<<(N+255)/256, 256>>>(z, p, beta, N);
+        next_p<<<(N+255)/256, 256>>>(dev_z, dev_p, dev_beta, N);
 
 
         k++;
 
     }
 
- 
+    //Free memory
+    free(h_R);
+    free(h_R_prev);
+    // free(h_float);
 
-    cudaFree(R);
-    cudaFree(R_prev);
-    cudaFree(numerator);
-    cudaFree(denominator);
-    cudaFree(alpha);
-    cudaFree(beta);
+    cudaFree(dev_p);
+    cudaFree(dev_R);
+    cudaFree(dev_R_prev);
+    cudaFree(dev_Ap);
+    cudaFree(dev_Ax0);
+    cudaFree(dev_alpha);
+    cudaFree(dev_denominator);
+    cudaFree(dev_numerator);
+    cudaFree(dev_beta);
+    cudaFree(dev_z);
     cudaFree(M_precon);
+    cudaFree(dev_r);
     cudaFree(b);
-    cudaFree(r);
-    cudaFree(z);
-    cudaFree(p);
-    cudaFree(Ap);
 
 
 }
