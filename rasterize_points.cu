@@ -214,7 +214,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   int num_images = 1;
 
-  torch::Tensor dr_dxs = torch::zeros({P, H, W , 10, num_images}, means3D.options());
+  torch::Tensor dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options());
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
   torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());

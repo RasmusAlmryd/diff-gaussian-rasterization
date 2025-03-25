@@ -609,7 +609,6 @@ __device__ void preprocessCUDA_device(
 		computeCov3D_device(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 }
 
-
 template<uint32_t C>
 __global__
 void calc_b_non_sparse(
@@ -633,6 +632,7 @@ void calc_b_non_sparse(
     const float* cov3Ds,
     const float* viewmatrix,
     const float* projmatrix,
+    const int W, int H,
     const float focal_x, float focal_y,
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
@@ -645,121 +645,339 @@ void calc_b_non_sparse(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
+    const uint2 pix = {y / W, y % W};
+    const int num_params_per_gauss = 59;
+
+
     // Calculate the residuals wrt intermideiary parameters
     int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-    float dr_dmean2D_y = J[index*10 + 1];
-    float dr_dconic2D_x = J[index*10 + 2] ;
-    float dr_conic2D_y = J[index*10 + 3];
-    float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-    float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
-
+    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    float G = J[index * 13 + 2];
+    float dr_dinvdepths = J[index * 13 + 3];
+    
     float dr_dcolors[C] = {0.0f};
     for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
+        dr_dcolors[ch] = J[index*13 + ch + 4];
     }
-    float dr_dinvdepths = J[index*10 + 9];
-
-
-    float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
-    glm::vec4 dr_drot = glm::vec4(0.0f);
-    glm::vec3 dr_dscale = glm::vec3(0.0f);
-    glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
-    float dr_dcov3D[6] = {}; 
-
-    computeCov2DCUDA_device(
-        P,
-        (float3*)means3D,
-        radii,
-        cov3Ds,
-        focal_x, focal_y,
-        tan_fovx, tan_fovy,
-        viewmatrix,
-        opacities,
-        &dr_dconics[0],
-        &dr_dopacity,
-        &dr_dinvdepths,
-        &dr_dmean,
-        &dr_dcov3D[0],
-        antialiasing,
-        x
-    );
-
-    preprocessCUDA_device<C>(
-        P, D, max_coeffs,
-        (float3*)means3D,
-        radii,
-        dc,
-        shs,
-        clamped,
-        (glm::vec3*)scales,
-        (glm::vec4*)rotations,
-        scale_modifier,
-        projmatrix,
-        (glm::vec3*)campos,
-        &dr_dmean2D,
-        (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
-        &dr_dcov3D[0],
-        &dr_ddc[0],
-        (float*)&dr_dsh[0],
-        &dr_dscale,
-        &dr_drot,
-        &dr_dopacity,
-        x
-    );
-
-    const int num_params_per_gauss = 59;
-    float residual = loss_residuals[y];
-
-    glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
-    dr_dscale.x = dr_dscale.x * scale.x;
-    dr_dscale.y = dr_dscale.y * scale.y;
-    dr_dscale.z = dr_dscale.z * scale.z;
-
-    float real_opacity_val = log(opacities[x]/(1-opacities[x]));
-    dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
-
-    float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
-
-    float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
-    dr_drot.x = dr_drot_un.x;
-    dr_drot.y = dr_drot_un.y;
-    dr_drot.z = dr_drot_un.z;
-    dr_drot.w = dr_drot_un.w;
-
-
-    atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 1], -dr_dmean.y * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 2], -dr_dmean.z * residual);
-
-    atomicAdd(&b[x * num_params_per_gauss + 3], -dr_dscale.x * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 4], -dr_dscale.y * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 5], -dr_dscale.z * residual);
-
-    atomicAdd(&b[x * num_params_per_gauss + 6], -dr_drot.x * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 7], -dr_drot.y * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 8], -dr_drot.z * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 9], -dr_drot.w * residual);
-
-    atomicAdd(&b[x * num_params_per_gauss + 10], -dr_dopacity * residual);
-
-    atomicAdd(&b[x * num_params_per_gauss + 11], -dr_ddc.x * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 12], -dr_ddc.y * residual);
-    atomicAdd(&b[x * num_params_per_gauss + 13], -dr_ddc.z * residual);
-
-    for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], -dr_dsh[i].x * residual);
-        atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], -dr_dsh[i].y * residual);
-        atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], -dr_dsh[i].z * residual);
+    
+    float dr_dalpha_channel[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
     }
+    const float conic_w = J[index * 13 + 10];
+    const float dG_ddelx = J[index * 13 + 11];
+    const float dG_ddely = J[index * 13 + 12];
+    
+
+    const float ddelx_dx = 0.5 * W;
+	const float ddely_dy = 0.5 * H;
+
+    for (int ch = 0; ch < C; ch++) {
+        
+        // Helpful reusable temporary variables
+        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        const float gdx = G * d.x; //
+        const float gdy = G * d.y; //
+        // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
+        // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
+        
+        // accumulate the gradients
+        const float dr_dmean2D_x = dL_dG * dG_ddelx * ddelx_dx;
+        const float dr_dmean2D_y = dL_dG * dG_ddely * ddely_dy;
+        
+        const float dr_dconic2D_x= -0.5f * gdx * d.x * dL_dG;
+        const float dr_dconic2D_y= -0.5f * gdx * d.y * dL_dG;
+        const float dr_dconic2D_w= -0.5f * gdy * d.y * dL_dG;
+
+        
+        float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+        float dr_dopacity = G * dr_dalpha_channel[ch];
+
+        float dr_dconics[4] = {dr_dconic2D_x, dr_dconic2D_y, 0.0f, dr_dconic2D_w};
+
+        glm::vec3 dL_dcolortemp = glm::vec3(dr_dcolors[0],dr_dcolors[1],dr_dcolors[2]);
+        dL_dcolortemp.x *= ch == 0 ? 1 : 0;
+        dL_dcolortemp.y *= ch == 1 ? 1 : 0;
+        dL_dcolortemp.z *= ch == 2 ? 1 : 0;
+
+        float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+        glm::vec4 dr_drot = glm::vec4(0.0f);
+        glm::vec3 dr_dscale = glm::vec3(0.0f);
+        glm::vec3 dr_ddc = glm::vec3(0.0f);
+        float raw_dr_dsh[15*3] = {};
+        glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+        float dr_dcov3D[6] = {}; 
+
+
+        computeCov2DCUDA_device(
+            P,
+            (float3*)means3D,
+            radii,
+            cov3Ds,
+            focal_x, focal_y,
+            tan_fovx, tan_fovy,
+            viewmatrix,
+            opacities,
+            &dr_dconics[0],
+            &dr_dopacity,
+            &dr_dinvdepths,
+            &dr_dmean,
+            &dr_dcov3D[0],
+            antialiasing,
+            x
+        );
+    
+        preprocessCUDA_device<C>(
+            P, D, max_coeffs,
+            (float3*)means3D,
+            radii,
+            dc,
+            shs,
+            clamped,
+            (glm::vec3*)scales,
+            (glm::vec4*)rotations,
+            scale_modifier,
+            projmatrix,
+            (glm::vec3*)campos,
+            &dr_dmean2D,
+            (glm::vec3*)&dr_dmean,
+            (float*)&dL_dcolortemp[0],
+            &dr_dcov3D[0],
+            &dr_ddc[0],
+            (float*)&dr_dsh[0],
+            &dr_dscale,
+            &dr_drot,
+            &dr_dopacity,
+            x
+        );
+    
+        float residual = loss_residuals[y*3 + ch];
+    
+        glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+        dr_dscale.x = dr_dscale.x * scale.x;
+        dr_dscale.y = dr_dscale.y * scale.y;
+        dr_dscale.z = dr_dscale.z * scale.z;
+    
+        float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+        dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    
+        float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    
+        float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+        dr_drot.x = dr_drot_un.x;
+        dr_drot.y = dr_drot_un.y;
+        dr_drot.z = dr_drot_un.z;
+        dr_drot.w = dr_drot_un.w;
+    
+    
+        atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 1], -dr_dmean.y * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 2], -dr_dmean.z * residual);
+    
+        atomicAdd(&b[x * num_params_per_gauss + 3], -dr_dscale.x * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 4], -dr_dscale.y * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 5], -dr_dscale.z * residual);
+    
+        atomicAdd(&b[x * num_params_per_gauss + 6], -dr_drot.x * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 7], -dr_drot.y * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 8], -dr_drot.z * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 9], -dr_drot.w * residual);
+    
+        atomicAdd(&b[x * num_params_per_gauss + 10], -dr_dopacity * residual);
+    
+        atomicAdd(&b[x * num_params_per_gauss + 11], -dr_ddc.x * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 12], -dr_ddc.y * residual);
+        atomicAdd(&b[x * num_params_per_gauss + 13], -dr_ddc.z * residual);
+    
+        for(int i = 0; i < max_coeffs; i++){
+            atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], -dr_dsh[i].x * residual);
+            atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], -dr_dsh[i].y * residual);
+            atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], -dr_dsh[i].z * residual);
+        }
+    }
+     
+
+
+    // float dr_dmean2D_x = J[index*10];
+    // float dr_dmean2D_y = J[index*10 + 1];
+    // float dr_dconic2D_x = J[index*10 + 2] ;
+    // float dr_conic2D_y = J[index*10 + 3];
+    // float dr_dconic2D_w = J[index*10 + 4];
+    // float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+    // float dr_dopacity = J[index*10 + 5];
+    // float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*10 + ch + 6];
+    // }
+    // float dr_dinvdepths = J[index*10 + 9];
+
+
+    // float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+    // glm::vec4 dr_drot = glm::vec4(0.0f);
+    // glm::vec3 dr_dscale = glm::vec3(0.0f);
+    // glm::vec3 dr_ddc = glm::vec3(0.0f);
+    // float raw_dr_dsh[15*3] = {};
+    // glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+    // float dr_dcov3D[6] = {}; 
+
+    
     
     
 }
+
+// template<uint32_t C>
+// __global__
+// void calc_b_non_sparse(
+//     float* b, 
+//     float* J,
+//     float* loss_residuals, 
+//     uint32_t N, 
+//     uint32_t M,
+//     int P, 
+//     int D, 
+//     int max_coeffs, // max_coeffs = M
+//     const float* means3D, //const float3* means3D,
+//     const int* radii,
+//     const float* dc,
+//     const float* shs,
+//     const bool* clamped,
+//     const float* opacities,
+//     const float* scales, //const glm::vec3* scales,
+//     const float* rotations, //const glm::vec4* rotations,
+//     const float scale_modifier,
+//     const float* cov3Ds,
+//     const float* viewmatrix,
+//     const float* projmatrix,
+//     const float focal_x, float focal_y,
+//     const float tan_fovx, float tan_fovy,
+//     const float* campos, //const glm::vec3* campos,
+//     bool antialiasing
+//     ){
+
+//     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if(idx >= P*M) return;
+
+//     int x = idx % P;  // Gaussian index
+//     int y = idx / P;  // Pixel index
+
+//     // Calculate the residuals wrt intermideiary parameters
+//     int index= x + y * P;
+//     float dr_dmean2D_x = J[index*10];
+//     float dr_dmean2D_y = J[index*10 + 1];
+//     float dr_dconic2D_x = J[index*10 + 2] ;
+//     float dr_conic2D_y = J[index*10 + 3];
+//     float dr_dconic2D_w = J[index*10 + 4];
+//     float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+//     float dr_dopacity = J[index*10 + 5];
+//     float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+
+//     float dr_dcolors[C] = {0.0f};
+//     for (int ch = 0; ch < C; ++ch) {
+//         dr_dcolors[ch] = J[index*10 + ch + 6];
+//     }
+//     float dr_dinvdepths = J[index*10 + 9];
+
+
+//     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+//     glm::vec4 dr_drot = glm::vec4(0.0f);
+//     glm::vec3 dr_dscale = glm::vec3(0.0f);
+//     glm::vec3 dr_ddc = glm::vec3(0.0f);
+//     float raw_dr_dsh[15*3] = {};
+//     glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+//     float dr_dcov3D[6] = {}; 
+
+//     computeCov2DCUDA_device(
+//         P,
+//         (float3*)means3D,
+//         radii,
+//         cov3Ds,
+//         focal_x, focal_y,
+//         tan_fovx, tan_fovy,
+//         viewmatrix,
+//         opacities,
+//         &dr_dconics[0],
+//         &dr_dopacity,
+//         &dr_dinvdepths,
+//         &dr_dmean,
+//         &dr_dcov3D[0],
+//         antialiasing,
+//         x
+//     );
+
+//     preprocessCUDA_device<C>(
+//         P, D, max_coeffs,
+//         (float3*)means3D,
+//         radii,
+//         dc,
+//         shs,
+//         clamped,
+//         (glm::vec3*)scales,
+//         (glm::vec4*)rotations,
+//         scale_modifier,
+//         projmatrix,
+//         (glm::vec3*)campos,
+//         &dr_dmean2D,
+//         (glm::vec3*)&dr_dmean,
+//         &dr_dcolors[0],
+//         &dr_dcov3D[0],
+//         &dr_ddc[0],
+//         (float*)&dr_dsh[0],
+//         &dr_dscale,
+//         &dr_drot,
+//         &dr_dopacity,
+//         x
+//     );
+
+//     const int num_params_per_gauss = 59;
+//     float residual = loss_residuals[y];
+
+//     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+//     dr_dscale.x = dr_dscale.x * scale.x;
+//     dr_dscale.y = dr_dscale.y * scale.y;
+//     dr_dscale.z = dr_dscale.z * scale.z;
+
+//     float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+//     dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+
+//     float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+
+//     float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+//     dr_drot.x = dr_drot_un.x;
+//     dr_drot.y = dr_drot_un.y;
+//     dr_drot.z = dr_drot_un.z;
+//     dr_drot.w = dr_drot_un.w;
+
+
+//     atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 1], -dr_dmean.y * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 2], -dr_dmean.z * residual);
+
+//     atomicAdd(&b[x * num_params_per_gauss + 3], -dr_dscale.x * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 4], -dr_dscale.y * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 5], -dr_dscale.z * residual);
+
+//     atomicAdd(&b[x * num_params_per_gauss + 6], -dr_drot.x * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 7], -dr_drot.y * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 8], -dr_drot.z * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 9], -dr_drot.w * residual);
+
+//     atomicAdd(&b[x * num_params_per_gauss + 10], -dr_dopacity * residual);
+
+//     atomicAdd(&b[x * num_params_per_gauss + 11], -dr_ddc.x * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 12], -dr_ddc.y * residual);
+//     atomicAdd(&b[x * num_params_per_gauss + 13], -dr_ddc.z * residual);
+
+//     for(int i = 0; i < max_coeffs; i++){
+//         atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], -dr_dsh[i].x * residual);
+//         atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], -dr_dsh[i].y * residual);
+//         atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], -dr_dsh[i].z * residual);
+//     }
+    
+    
+// }
+
 
 template<uint32_t C>
 __global__
@@ -784,6 +1002,7 @@ void residual_dot_sum(
     const float* cov3Ds,
     const float* viewmatrix,
     const float* projmatrix,
+    const int W, int H,
     const float focal_x, float focal_y,
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
@@ -795,120 +1014,310 @@ void residual_dot_sum(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
-
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
-    }
-    float dr_dinvdepths = J[index*10 + 9];
-
-
-    float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
-    glm::vec4 dr_drot = glm::vec4(0.0f);
-    glm::vec3 dr_dscale = glm::vec3(0.0f);
-    glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;   
-    float dr_dcov3D[6] = {}; 
-
-    computeCov2DCUDA_device(
-        P,
-        (float3*)means3D,
-        radii,
-        cov3Ds,
-        focal_x, focal_y,
-        tan_fovx, tan_fovy,
-        viewmatrix,
-        opacities,
-        &dr_dconics[0],
-        &dr_dopacity,
-        &dr_dinvdepths,
-        &dr_dmean,
-        &dr_dcov3D[0],
-        antialiasing,
-        x
-    );
-
-    preprocessCUDA_device<C>(
-        P, D, max_coeffs,
-        (float3*)means3D,
-        radii,
-        dc,
-        shs,
-        clamped,
-        (glm::vec3*)scales,
-        (glm::vec4*)rotations,
-        scale_modifier,
-        projmatrix,
-        (glm::vec3*)campos,
-        &dr_dmean2D,
-        (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
-        &dr_dcov3D[0],
-        &dr_ddc[0],
-        (float*)&dr_dsh[0],
-        &dr_dscale,
-        &dr_drot,
-        &dr_dopacity,
-        x
-    );
-
+    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
-    glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
-    dr_dscale.x = dr_dscale.x * scale.x;
-    dr_dscale.y = dr_dscale.y * scale.y;
-    dr_dscale.z = dr_dscale.z * scale.z;
 
-    float real_opacity_val = log(opacities[x]/(1-opacities[x]));
-    dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    // Calculate the residuals wrt intermideiary parameters
+    int index= x + y * P;
+    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    float G = J[index * 13 + 2];
+    float dr_dinvdepths = J[index * 13 + 3];
+    
+    float dr_dcolors[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = J[index*13 + ch + 4];
+    }
+    
+    float dr_dalpha_channel[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    }
+    const float conic_w = J[index * 13 + 10];
+    const float dG_ddelx = J[index * 13 + 11];
+    const float dG_ddely = J[index * 13 + 12];
+    
 
-    float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    const float ddelx_dx = 0.5 * W;
+	const float ddely_dy = 0.5 * H;
 
-    float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
-    dr_drot.x = dr_drot_un.x;
-    dr_drot.y = dr_drot_un.y;
-    dr_drot.z = dr_drot_un.z;
-    dr_drot.w = dr_drot_un.w;
+    for (int ch = 0; ch < C; ch++) {
+        
+        // Helpful reusable temporary variables
+        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        const float gdx = G * d.x; //
+        const float gdy = G * d.y; //
+        // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
+        // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
+        
+        // accumulate the gradients
+        const float dr_dmean2D_x = dL_dG * dG_ddelx * ddelx_dx;
+        const float dr_dmean2D_y = dL_dG * dG_ddely * ddely_dy;
+        
+        const float dr_dconic2D_x= -0.5f * gdx * d.x * dL_dG;
+        const float dr_dconic2D_y= -0.5f * gdx * d.y * dL_dG;
+        const float dr_dconic2D_w= -0.5f * gdy * d.y * dL_dG;
+
+        
+        float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+        float dr_dopacity = G * dr_dalpha_channel[ch];
+
+        float dr_dconics[4] = {dr_dconic2D_x, dr_dconic2D_y, 0.0f, dr_dconic2D_w};
+
+        glm::vec3 dL_dcolortemp = glm::vec3(dr_dcolors[0],dr_dcolors[1],dr_dcolors[2]);
+        dL_dcolortemp.x *= ch == 0 ? 1 : 0;
+        dL_dcolortemp.y *= ch == 1 ? 1 : 0;
+        dL_dcolortemp.z *= ch == 2 ? 1 : 0;
+
+        float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+        glm::vec4 dr_drot = glm::vec4(0.0f);
+        glm::vec3 dr_dscale = glm::vec3(0.0f);
+        glm::vec3 dr_ddc = glm::vec3(0.0f);
+        float raw_dr_dsh[15*3] = {};
+        glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+        float dr_dcov3D[6] = {}; 
 
 
-    atomicAdd(&residual_dot_v[y], dr_dmean.x * v[x * num_params_per_gauss + 0]);
-    atomicAdd(&residual_dot_v[y], dr_dmean.y * v[x * num_params_per_gauss + 1]);
-    atomicAdd(&residual_dot_v[y], dr_dmean.z * v[x * num_params_per_gauss + 2]);
+        computeCov2DCUDA_device(
+            P,
+            (float3*)means3D,
+            radii,
+            cov3Ds,
+            focal_x, focal_y,
+            tan_fovx, tan_fovy,
+            viewmatrix,
+            opacities,
+            &dr_dconics[0],
+            &dr_dopacity,
+            &dr_dinvdepths,
+            &dr_dmean,
+            &dr_dcov3D[0],
+            antialiasing,
+            x
+        );
+    
+        preprocessCUDA_device<C>(
+            P, D, max_coeffs,
+            (float3*)means3D,
+            radii,
+            dc,
+            shs,
+            clamped,
+            (glm::vec3*)scales,
+            (glm::vec4*)rotations,
+            scale_modifier,
+            projmatrix,
+            (glm::vec3*)campos,
+            &dr_dmean2D,
+            (glm::vec3*)&dr_dmean,
+            (float*)&dL_dcolortemp[0],
+            &dr_dcov3D[0],
+            &dr_ddc[0],
+            (float*)&dr_dsh[0],
+            &dr_dscale,
+            &dr_drot,
+            &dr_dopacity,
+            x
+        );
+    
+    
+        glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+        dr_dscale.x = dr_dscale.x * scale.x;
+        dr_dscale.y = dr_dscale.y * scale.y;
+        dr_dscale.z = dr_dscale.z * scale.z;
+    
+        float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+        dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    
+        float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    
+        float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+        dr_drot.x = dr_drot_un.x;
+        dr_drot.y = dr_drot_un.y;
+        dr_drot.z = dr_drot_un.z;
+        dr_drot.w = dr_drot_un.w;
+    
 
-    atomicAdd(&residual_dot_v[y], dr_dscale.x * v[x * num_params_per_gauss + 3]);
-    atomicAdd(&residual_dot_v[y], dr_dscale.y * v[x * num_params_per_gauss + 4]);
-    atomicAdd(&residual_dot_v[y], dr_dscale.z * v[x * num_params_per_gauss + 5]);
 
-    atomicAdd(&residual_dot_v[y], dr_drot.x * v[x * num_params_per_gauss + 6]);
-    atomicAdd(&residual_dot_v[y], dr_drot.y * v[x * num_params_per_gauss + 7]);
-    atomicAdd(&residual_dot_v[y], dr_drot.z * v[x * num_params_per_gauss + 8]);
-    atomicAdd(&residual_dot_v[y], dr_drot.w * v[x * num_params_per_gauss + 9]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.x * v[x * num_params_per_gauss + 0]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.y * v[x * num_params_per_gauss + 1]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.z * v[x * num_params_per_gauss + 2]);
 
-    atomicAdd(&residual_dot_v[y], dr_dopacity * v[x * num_params_per_gauss + 10]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.x * v[x * num_params_per_gauss + 3]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.y * v[x * num_params_per_gauss + 4]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.z * v[x * num_params_per_gauss + 5]);
 
-    atomicAdd(&residual_dot_v[y], dr_ddc.x * v[x * num_params_per_gauss + 11]);
-    atomicAdd(&residual_dot_v[y], dr_ddc.y * v[x * num_params_per_gauss + 12]);
-    atomicAdd(&residual_dot_v[y], dr_ddc.z * v[x * num_params_per_gauss + 13]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.x * v[x * num_params_per_gauss + 6]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.y * v[x * num_params_per_gauss + 7]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.z * v[x * num_params_per_gauss + 8]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.w * v[x * num_params_per_gauss + 9]);
 
-    for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
-        atomicAdd(&residual_dot_v[y], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_dopacity * v[x * num_params_per_gauss + 10]);
+
+        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.x * v[x * num_params_per_gauss + 11]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.y * v[x * num_params_per_gauss + 12]);
+        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.z * v[x * num_params_per_gauss + 13]);
+
+        for(int i = 0; i < max_coeffs; i++){
+            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
+            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
+            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
+        }
     }
 
 
 }
+
+
+
+// template<uint32_t C>
+// __global__
+// void residual_dot_sum(
+//     float* J, 
+//     float* v, 
+//     float* residual_dot_v, 
+//     uint32_t N, 
+//     uint32_t M,
+//     int P, 
+//     int D, 
+//     int max_coeffs, // max_coeffs = M
+//     const float* means3D, //const float3* means3D,
+//     const int* radii,
+//     const float* dc,
+//     const float* shs,
+//     const bool* clamped,
+//     const float* opacities,
+//     const float* scales, //const glm::vec3* scales,
+//     const float* rotations, //const glm::vec4* rotations,
+//     const float scale_modifier,
+//     const float* cov3Ds,
+//     const float* viewmatrix,
+//     const float* projmatrix,
+//     const float focal_x, float focal_y,
+//     const float tan_fovx, float tan_fovy,
+//     const float* campos, //const glm::vec3* campos,
+//     bool antialiasing
+// ){
+//     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if(idx >= P*M) return;
+
+//     int x = idx % P;  // Gaussian index
+//     int y = idx / P;  // Pixel index
+
+//     // Calculate the residuals wrt intermideiary parameters
+//     int index= x + y * P;
+//     float dr_dmean2D_x = J[index*10];
+// 	float dr_dmean2D_y = J[index*10 + 1];
+// 	float dr_dconic2D_x = J[index*10 + 2] ;
+// 	float dr_conic2D_y = J[index*10 + 3];
+// 	float dr_dconic2D_w = J[index*10 + 4];
+//     float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+// 	float dr_dopacity = J[index*10 + 5];
+//     float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+
+//     float dr_dcolors[C] = {0.0f};
+//     for (int ch = 0; ch < C; ++ch) {
+//         dr_dcolors[ch] = J[index*10 + ch + 6];
+//     }
+//     float dr_dinvdepths = J[index*10 + 9];
+
+
+//     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+//     glm::vec4 dr_drot = glm::vec4(0.0f);
+//     glm::vec3 dr_dscale = glm::vec3(0.0f);
+//     glm::vec3 dr_ddc = glm::vec3(0.0f);
+//     float raw_dr_dsh[15*3] = {};
+//     glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;   
+//     float dr_dcov3D[6] = {}; 
+
+//     computeCov2DCUDA_device(
+//         P,
+//         (float3*)means3D,
+//         radii,
+//         cov3Ds,
+//         focal_x, focal_y,
+//         tan_fovx, tan_fovy,
+//         viewmatrix,
+//         opacities,
+//         &dr_dconics[0],
+//         &dr_dopacity,
+//         &dr_dinvdepths,
+//         &dr_dmean,
+//         &dr_dcov3D[0],
+//         antialiasing,
+//         x
+//     );
+
+//     preprocessCUDA_device<C>(
+//         P, D, max_coeffs,
+//         (float3*)means3D,
+//         radii,
+//         dc,
+//         shs,
+//         clamped,
+//         (glm::vec3*)scales,
+//         (glm::vec4*)rotations,
+//         scale_modifier,
+//         projmatrix,
+//         (glm::vec3*)campos,
+//         &dr_dmean2D,
+//         (glm::vec3*)&dr_dmean,
+//         &dr_dcolors[0],
+//         &dr_dcov3D[0],
+//         &dr_ddc[0],
+//         (float*)&dr_dsh[0],
+//         &dr_dscale,
+//         &dr_drot,
+//         &dr_dopacity,
+//         x
+//     );
+
+//     const int num_params_per_gauss = 59;
+
+//     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+//     dr_dscale.x = dr_dscale.x * scale.x;
+//     dr_dscale.y = dr_dscale.y * scale.y;
+//     dr_dscale.z = dr_dscale.z * scale.z;
+
+//     float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+//     dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+
+//     float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+
+//     float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+//     dr_drot.x = dr_drot_un.x;
+//     dr_drot.y = dr_drot_un.y;
+//     dr_drot.z = dr_drot_un.z;
+//     dr_drot.w = dr_drot_un.w;
+
+
+//     atomicAdd(&residual_dot_v[y], dr_dmean.x * v[x * num_params_per_gauss + 0]);
+//     atomicAdd(&residual_dot_v[y], dr_dmean.y * v[x * num_params_per_gauss + 1]);
+//     atomicAdd(&residual_dot_v[y], dr_dmean.z * v[x * num_params_per_gauss + 2]);
+
+//     atomicAdd(&residual_dot_v[y], dr_dscale.x * v[x * num_params_per_gauss + 3]);
+//     atomicAdd(&residual_dot_v[y], dr_dscale.y * v[x * num_params_per_gauss + 4]);
+//     atomicAdd(&residual_dot_v[y], dr_dscale.z * v[x * num_params_per_gauss + 5]);
+
+//     atomicAdd(&residual_dot_v[y], dr_drot.x * v[x * num_params_per_gauss + 6]);
+//     atomicAdd(&residual_dot_v[y], dr_drot.y * v[x * num_params_per_gauss + 7]);
+//     atomicAdd(&residual_dot_v[y], dr_drot.z * v[x * num_params_per_gauss + 8]);
+//     atomicAdd(&residual_dot_v[y], dr_drot.w * v[x * num_params_per_gauss + 9]);
+
+//     atomicAdd(&residual_dot_v[y], dr_dopacity * v[x * num_params_per_gauss + 10]);
+
+//     atomicAdd(&residual_dot_v[y], dr_ddc.x * v[x * num_params_per_gauss + 11]);
+//     atomicAdd(&residual_dot_v[y], dr_ddc.y * v[x * num_params_per_gauss + 12]);
+//     atomicAdd(&residual_dot_v[y], dr_ddc.z * v[x * num_params_per_gauss + 13]);
+
+//     for(int i = 0; i < max_coeffs; i++){
+//         atomicAdd(&residual_dot_v[y], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
+//         atomicAdd(&residual_dot_v[y], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
+//         atomicAdd(&residual_dot_v[y], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
+//     }
+
+
+// }
 
 template<uint32_t C>
 __global__
@@ -933,6 +1342,7 @@ void sum_residuals(
     const float* cov3Ds,
     const float* viewmatrix,
     const float* projmatrix,
+    const int W, int H,
     const float focal_x, float focal_y,
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
@@ -944,120 +1354,307 @@ void sum_residuals(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
-
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
-    }
-    float dr_dinvdepths = J[index*10 + 9];
-
-
-    float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
-    glm::vec4 dr_drot = glm::vec4(0.0f);
-    glm::vec3 dr_dscale = glm::vec3(0.0f);
-    glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
-    float dr_dcov3D[6] = {}; 
-
-    computeCov2DCUDA_device(
-        P,
-        (float3*)means3D,
-        radii,
-        cov3Ds,
-        focal_x, focal_y,
-        tan_fovx, tan_fovy,
-        viewmatrix,
-        opacities,
-        &dr_dconics[0],
-        &dr_dopacity,
-        &dr_dinvdepths,
-        &dr_dmean,
-        &dr_dcov3D[0],
-        antialiasing,
-        x
-    );
-
-    preprocessCUDA_device<C>(
-        P, D, max_coeffs,
-        (float3*)means3D,
-        radii,
-        dc,
-        shs,
-        clamped,
-        (glm::vec3*)scales,
-        (glm::vec4*)rotations,
-        scale_modifier,
-        projmatrix,
-        (glm::vec3*)campos,
-        &dr_dmean2D,
-        (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
-        &dr_dcov3D[0],
-        &dr_ddc[0],
-        (float*)&dr_dsh[0],
-        &dr_dscale,
-        &dr_drot,
-        &dr_dopacity,
-        x
-    );
-
+    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
-    glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
-    dr_dscale.x = dr_dscale.x * scale.x;
-    dr_dscale.y = dr_dscale.y * scale.y;
-    dr_dscale.z = dr_dscale.z * scale.z;
 
-    float real_opacity_val = log(opacities[x]/(1-opacities[x]));
-    dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    // Calculate the residuals wrt intermideiary parameters
+    int index= x + y * P;
+    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    float G = J[index * 13 + 2];
+    float dr_dinvdepths = J[index * 13 + 3];
+    
+    float dr_dcolors[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = J[index*13 + ch + 4];
+    }
+    
+    float dr_dalpha_channel[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    }
+    const float conic_w = J[index * 13 + 10];
+    const float dG_ddelx = J[index * 13 + 11];
+    const float dG_ddely = J[index * 13 + 12];
+    
 
-    float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    const float ddelx_dx = 0.5 * W;
+	const float ddely_dy = 0.5 * H;
 
-    float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
-    dr_drot.x = dr_drot_un.x;
-    dr_drot.y = dr_drot_un.y;
-    dr_drot.z = dr_drot_un.z;
-    dr_drot.w = dr_drot_un.w;
+    for (int ch = 0; ch < C; ch++) {
+        
+        // Helpful reusable temporary variables
+        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        const float gdx = G * d.x; //
+        const float gdy = G * d.y; //
+        // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
+        // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
+        
+        // accumulate the gradients
+        const float dr_dmean2D_x = dL_dG * dG_ddelx * ddelx_dx;
+        const float dr_dmean2D_y = dL_dG * dG_ddely * ddely_dy;
+        
+        const float dr_dconic2D_x= -0.5f * gdx * d.x * dL_dG;
+        const float dr_dconic2D_y= -0.5f * gdx * d.y * dL_dG;
+        const float dr_dconic2D_w= -0.5f * gdy * d.y * dL_dG;
+
+        
+        float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+        float dr_dopacity = G * dr_dalpha_channel[ch];
+
+        float dr_dconics[4] = {dr_dconic2D_x, dr_dconic2D_y, 0.0f, dr_dconic2D_w};
+
+        glm::vec3 dL_dcolortemp = glm::vec3(dr_dcolors[0],dr_dcolors[1],dr_dcolors[2]);
+        dL_dcolortemp.x *= ch == 0 ? 1 : 0;
+        dL_dcolortemp.y *= ch == 1 ? 1 : 0;
+        dL_dcolortemp.z *= ch == 2 ? 1 : 0;
+
+        float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+        glm::vec4 dr_drot = glm::vec4(0.0f);
+        glm::vec3 dr_dscale = glm::vec3(0.0f);
+        glm::vec3 dr_ddc = glm::vec3(0.0f);
+        float raw_dr_dsh[15*3] = {};
+        glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+        float dr_dcov3D[6] = {}; 
 
 
+        computeCov2DCUDA_device(
+            P,
+            (float3*)means3D,
+            radii,
+            cov3Ds,
+            focal_x, focal_y,
+            tan_fovx, tan_fovy,
+            viewmatrix,
+            opacities,
+            &dr_dconics[0],
+            &dr_dopacity,
+            &dr_dinvdepths,
+            &dr_dmean,
+            &dr_dcov3D[0],
+            antialiasing,
+            x
+        );
+    
+        preprocessCUDA_device<C>(
+            P, D, max_coeffs,
+            (float3*)means3D,
+            radii,
+            dc,
+            shs,
+            clamped,
+            (glm::vec3*)scales,
+            (glm::vec4*)rotations,
+            scale_modifier,
+            projmatrix,
+            (glm::vec3*)campos,
+            &dr_dmean2D,
+            (glm::vec3*)&dr_dmean,
+            (float*)&dL_dcolortemp[0],
+            &dr_dcov3D[0],
+            &dr_ddc[0],
+            (float*)&dr_dsh[0],
+            &dr_dscale,
+            &dr_drot,
+            &dr_dopacity,
+            x
+        );
+    
+    
+        glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+        dr_dscale.x = dr_dscale.x * scale.x;
+        dr_dscale.y = dr_dscale.y * scale.y;
+        dr_dscale.z = dr_dscale.z * scale.z;
+    
+        float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+        dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    
+        float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    
+        float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+        dr_drot.x = dr_drot_un.x;
+        dr_drot.y = dr_drot_un.y;
+        dr_drot.z = dr_drot_un.z;
+        dr_drot.w = dr_drot_un.w;
 
-    atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 2], dr_dmean.z * residual_dot_v[y]);
 
-    atomicAdd(&Av[x * num_params_per_gauss + 3], dr_dscale.x * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 4], dr_dscale.y * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 5], dr_dscale.z * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 2], dr_dmean.z * residual_dot_v[y * C + ch]);
 
-    atomicAdd(&Av[x * num_params_per_gauss + 6], dr_drot.x * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 7], dr_drot.y * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 8], dr_drot.z * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 9], dr_drot.w * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 3], dr_dscale.x * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 4], dr_dscale.y * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 5], dr_dscale.z * residual_dot_v[y * C + ch]);
 
-    atomicAdd(&Av[x * num_params_per_gauss + 10], dr_dopacity * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 6], dr_drot.x * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 7], dr_drot.y * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 8], dr_drot.z * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 9], dr_drot.w * residual_dot_v[y * C + ch]);
 
-    atomicAdd(&Av[x * num_params_per_gauss + 11], dr_ddc.x * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 12], dr_ddc.y * residual_dot_v[y]);
-    atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 10], dr_dopacity * residual_dot_v[y * C + ch]);
 
-    for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[y]);
-        atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[y]);
-        atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[y]);
+        atomicAdd(&Av[x * num_params_per_gauss + 11], dr_ddc.x * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 12], dr_ddc.y * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[y * C + ch]);
+
+        for(int i = 0; i < max_coeffs; i++){
+            atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[y * C + ch]);
+            atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[y * C + ch]);
+            atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[y * C + ch]);
+        }
     }
     
 }
+
+
+// template<uint32_t C>
+// __global__
+// void sum_residuals(
+//     float* Av, 
+//     float* residual_dot_v, 
+//     float* J, 
+//     uint32_t N, 
+//     uint32_t M,
+//     int P, 
+//     int D, 
+//     int max_coeffs, // max_coeffs = M
+//     const float* means3D, //const float3* means3D,
+//     const int* radii,
+//     const float* dc,
+//     const float* shs,
+//     const bool* clamped,
+//     const float* opacities,
+//     const float* scales, //const glm::vec3* scales,
+//     const float* rotations, //const glm::vec4* rotations,
+//     const float scale_modifier,
+//     const float* cov3Ds,
+//     const float* viewmatrix,
+//     const float* projmatrix,
+//     const float focal_x, float focal_y,
+//     const float tan_fovx, float tan_fovy,
+//     const float* campos, //const glm::vec3* campos,
+//     bool antialiasing
+// ){
+//     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if(idx >= P*M) return;
+
+//     int x = idx % P;  // Gaussian index
+//     int y = idx / P;  // Pixel index
+
+//     // Calculate the residuals wrt intermideiary parameters
+//     int index= x + y * P;
+//     float dr_dmean2D_x = J[index*10];
+// 	float dr_dmean2D_y = J[index*10 + 1];
+// 	float dr_dconic2D_x = J[index*10 + 2] ;
+// 	float dr_conic2D_y = J[index*10 + 3];
+// 	float dr_dconic2D_w = J[index*10 + 4];
+//     float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+// 	float dr_dopacity = J[index*10 + 5];
+//     float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+
+//     float dr_dcolors[C] = {0.0f};
+//     for (int ch = 0; ch < C; ++ch) {
+//         dr_dcolors[ch] = J[index*10 + ch + 6];
+//     }
+//     float dr_dinvdepths = J[index*10 + 9];
+
+
+//     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+//     glm::vec4 dr_drot = glm::vec4(0.0f);
+//     glm::vec3 dr_dscale = glm::vec3(0.0f);
+//     glm::vec3 dr_ddc = glm::vec3(0.0f);
+//     float raw_dr_dsh[15*3] = {};
+//     glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+//     float dr_dcov3D[6] = {}; 
+
+//     computeCov2DCUDA_device(
+//         P,
+//         (float3*)means3D,
+//         radii,
+//         cov3Ds,
+//         focal_x, focal_y,
+//         tan_fovx, tan_fovy,
+//         viewmatrix,
+//         opacities,
+//         &dr_dconics[0],
+//         &dr_dopacity,
+//         &dr_dinvdepths,
+//         &dr_dmean,
+//         &dr_dcov3D[0],
+//         antialiasing,
+//         x
+//     );
+
+//     preprocessCUDA_device<C>(
+//         P, D, max_coeffs,
+//         (float3*)means3D,
+//         radii,
+//         dc,
+//         shs,
+//         clamped,
+//         (glm::vec3*)scales,
+//         (glm::vec4*)rotations,
+//         scale_modifier,
+//         projmatrix,
+//         (glm::vec3*)campos,
+//         &dr_dmean2D,
+//         (glm::vec3*)&dr_dmean,
+//         &dr_dcolors[0],
+//         &dr_dcov3D[0],
+//         &dr_ddc[0],
+//         (float*)&dr_dsh[0],
+//         &dr_dscale,
+//         &dr_drot,
+//         &dr_dopacity,
+//         x
+//     );
+
+//     const int num_params_per_gauss = 59;
+
+//     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+//     dr_dscale.x = dr_dscale.x * scale.x;
+//     dr_dscale.y = dr_dscale.y * scale.y;
+//     dr_dscale.z = dr_dscale.z * scale.z;
+
+//     float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+//     dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+
+//     float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+
+//     float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+//     dr_drot.x = dr_drot_un.x;
+//     dr_drot.y = dr_drot_un.y;
+//     dr_drot.z = dr_drot_un.z;
+//     dr_drot.w = dr_drot_un.w;
+
+
+
+//     atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 2], dr_dmean.z * residual_dot_v[y]);
+
+//     atomicAdd(&Av[x * num_params_per_gauss + 3], dr_dscale.x * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 4], dr_dscale.y * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 5], dr_dscale.z * residual_dot_v[y]);
+
+//     atomicAdd(&Av[x * num_params_per_gauss + 6], dr_drot.x * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 7], dr_drot.y * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 8], dr_drot.z * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 9], dr_drot.w * residual_dot_v[y]);
+
+//     atomicAdd(&Av[x * num_params_per_gauss + 10], dr_dopacity * residual_dot_v[y]);
+
+//     atomicAdd(&Av[x * num_params_per_gauss + 11], dr_ddc.x * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 12], dr_ddc.y * residual_dot_v[y]);
+//     atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[y]);
+
+//     for(int i = 0; i < max_coeffs; i++){
+//         atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[y]);
+//         atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[y]);
+//         atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[y]);
+//     }
+    
+// }
 
 
 void Av(
@@ -1081,14 +1678,15 @@ void Av(
     const float* cov3Ds,
     const float* viewmatrix,
     const float* projmatrix,
+    const int W, int H,
     const float focal_x, float focal_y,
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
     bool antialiasing
 ){
     float* residual_dot_v;
-    cudaMalloc(&residual_dot_v, M * sizeof(float));
-    cudaMemset(residual_dot_v, 0, M * sizeof(float));
+    cudaMalloc(&residual_dot_v, M * NUM_CHANNELS_3DGS * sizeof(float));
+    cudaMemset(residual_dot_v, 0, M * NUM_CHANNELS_3DGS * sizeof(float));
     
     residual_dot_sum<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
         J, 
@@ -1111,6 +1709,8 @@ void Av(
         cov3Ds, 
         viewmatrix, 
         projmatrix, 
+        W,
+        H,
         focal_x, 
         focal_y, 
         tan_fovx, 
@@ -1141,6 +1741,8 @@ void Av(
         cov3Ds, 
         viewmatrix, 
         projmatrix, 
+        W,
+        H,
         focal_x, 
         focal_y, 
         tan_fovx, 
@@ -1150,7 +1752,6 @@ void Av(
     );    // Ap = r(i) * (r(i)^T * p)
     cudaFree(residual_dot_v);
 }
-
 
 template<uint32_t C>
 __global__ 
@@ -1174,6 +1775,7 @@ void diagJTJ(
     const float* cov3Ds,
     const float* viewmatrix,
     const float* projmatrix,
+    const int W, int H,
     const float focal_x, float focal_y,
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
@@ -1185,121 +1787,307 @@ void diagJTJ(
     int x = idx % P;  // Gaussian index
     int y = idx / P;  // Pixel index
 
-    // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
-    float dr_dmean2D_x = J[index*10];
-	float dr_dmean2D_y = J[index*10 + 1];
-	float dr_dconic2D_x = J[index*10 + 2] ;
-	float dr_conic2D_y = J[index*10 + 3];
-	float dr_dconic2D_w = J[index*10 + 4];
-    float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
-	float dr_dopacity = J[index*10 + 5];
-    float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
-
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*10 + ch + 6];
-    }
-    float dr_dinvdepths = J[index*10 + 9];
-
-
-    float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
-    glm::vec4 dr_drot = glm::vec4(0.0f);
-    glm::vec3 dr_dscale = glm::vec3(0.0f);
-    glm::vec3 dr_ddc = glm::vec3(0.0f);
-    float raw_dr_dsh[15*3] = {};
-    glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
-    float dr_dcov3D[6] = {}; 
-
-    computeCov2DCUDA_device(
-        P,
-        (float3*)means3D,
-        radii,
-        cov3Ds,
-        focal_x, focal_y,
-        tan_fovx, tan_fovy,
-        viewmatrix,
-        opacities,
-        &dr_dconics[0],
-        &dr_dopacity,
-        &dr_dinvdepths,
-        &dr_dmean,
-        &dr_dcov3D[0],
-        antialiasing,
-        x
-    );
-
-    preprocessCUDA_device<C>(
-        P, D, max_coeffs,
-        (float3*)means3D,
-        radii,
-        dc,
-        shs,
-        clamped,
-        (glm::vec3*)scales,
-        (glm::vec4*)rotations,
-        scale_modifier,
-        projmatrix,
-        (glm::vec3*)campos,
-        &dr_dmean2D,
-        (glm::vec3*)&dr_dmean,
-        &dr_dcolors[0],
-        &dr_dcov3D[0],
-        &dr_ddc[0],
-        (float*)&dr_dsh[0],
-        &dr_dscale,
-        &dr_drot,
-        &dr_dopacity,
-        x
-    );
-
+    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
-    glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
-    dr_dscale.x = dr_dscale.x * scale.x;
-    dr_dscale.y = dr_dscale.y * scale.y;
-    dr_dscale.z = dr_dscale.z * scale.z;
 
-    float real_opacity_val = log(opacities[x]/(1-opacities[x]));
-    dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    // Calculate the residuals wrt intermideiary parameters
+    int index= x + y * P;
+    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    float G = J[index * 13 + 2];
+    float dr_dinvdepths = J[index * 13 + 3];
+    
+    float dr_dcolors[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = J[index*13 + ch + 4];
+    }
+    
+    float dr_dalpha_channel[C] = {0.0f};
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    }
+    const float conic_w = J[index * 13 + 10];
+    const float dG_ddelx = J[index * 13 + 11];
+    const float dG_ddely = J[index * 13 + 12];
+    
 
-    float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    const float ddelx_dx = 0.5 * W;
+	const float ddely_dy = 0.5 * H;
 
-    float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
-    dr_drot.x = dr_drot_un.x;
-    dr_drot.y = dr_drot_un.y;
-    dr_drot.z = dr_drot_un.z;
-    dr_drot.w = dr_drot_un.w;
+    for (int ch = 0; ch < C; ch++) {
+        
+        // Helpful reusable temporary variables
+        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        const float gdx = G * d.x; //
+        const float gdy = G * d.y; //
+        // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
+        // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
+        
+        // accumulate the gradients
+        const float dr_dmean2D_x = dL_dG * dG_ddelx * ddelx_dx;
+        const float dr_dmean2D_y = dL_dG * dG_ddely * ddely_dy;
+        
+        const float dr_dconic2D_x= -0.5f * gdx * d.x * dL_dG;
+        const float dr_dconic2D_y= -0.5f * gdx * d.y * dL_dG;
+        const float dr_dconic2D_w= -0.5f * gdy * d.y * dL_dG;
+
+        
+        float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+        float dr_dopacity = G * dr_dalpha_channel[ch];
+
+        float dr_dconics[4] = {dr_dconic2D_x, dr_dconic2D_y, 0.0f, dr_dconic2D_w};
+
+        glm::vec3 dL_dcolortemp = glm::vec3(dr_dcolors[0],dr_dcolors[1],dr_dcolors[2]);
+        dL_dcolortemp.x *= ch == 0 ? 1 : 0;
+        dL_dcolortemp.y *= ch == 1 ? 1 : 0;
+        dL_dcolortemp.z *= ch == 2 ? 1 : 0;
+
+        float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+        glm::vec4 dr_drot = glm::vec4(0.0f);
+        glm::vec3 dr_dscale = glm::vec3(0.0f);
+        glm::vec3 dr_ddc = glm::vec3(0.0f);
+        float raw_dr_dsh[15*3] = {};
+        glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+        float dr_dcov3D[6] = {}; 
+
+
+        computeCov2DCUDA_device(
+            P,
+            (float3*)means3D,
+            radii,
+            cov3Ds,
+            focal_x, focal_y,
+            tan_fovx, tan_fovy,
+            viewmatrix,
+            opacities,
+            &dr_dconics[0],
+            &dr_dopacity,
+            &dr_dinvdepths,
+            &dr_dmean,
+            &dr_dcov3D[0],
+            antialiasing,
+            x
+        );
+    
+        preprocessCUDA_device<C>(
+            P, D, max_coeffs,
+            (float3*)means3D,
+            radii,
+            dc,
+            shs,
+            clamped,
+            (glm::vec3*)scales,
+            (glm::vec4*)rotations,
+            scale_modifier,
+            projmatrix,
+            (glm::vec3*)campos,
+            &dr_dmean2D,
+            (glm::vec3*)&dr_dmean,
+            (float*)&dL_dcolortemp[0],
+            &dr_dcov3D[0],
+            &dr_ddc[0],
+            (float*)&dr_dsh[0],
+            &dr_dscale,
+            &dr_drot,
+            &dr_dopacity,
+            x
+        );
+    
+    
+        glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+        dr_dscale.x = dr_dscale.x * scale.x;
+        dr_dscale.y = dr_dscale.y * scale.y;
+        dr_dscale.z = dr_dscale.z * scale.z;
+    
+        float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+        dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+    
+        float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+    
+        float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+        dr_drot.x = dr_drot_un.x;
+        dr_drot.y = dr_drot_un.y;
+        dr_drot.z = dr_drot_un.z;
+        dr_drot.w = dr_drot_un.w;
 
 
 
-    atomicAdd(&M_precon[x * num_params_per_gauss + 0], dr_dmean.x * dr_dmean.x);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 1], dr_dmean.y * dr_dmean.y);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 2], dr_dmean.z * dr_dmean.z);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 0], dr_dmean.x * dr_dmean.x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 1], dr_dmean.y * dr_dmean.y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 2], dr_dmean.z * dr_dmean.z);
 
-    atomicAdd(&M_precon[x * num_params_per_gauss + 3], dr_dscale.x * dr_dscale.x);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 4], dr_dscale.y * dr_dscale.y);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 5], dr_dscale.z * dr_dscale.z);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 3], dr_dscale.x * dr_dscale.x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 4], dr_dscale.y * dr_dscale.y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 5], dr_dscale.z * dr_dscale.z);
 
-    atomicAdd(&M_precon[x * num_params_per_gauss + 6], dr_drot.x * dr_drot.x);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 7], dr_drot.y * dr_drot.y);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 8], dr_drot.z * dr_drot.z);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 9], dr_drot.w * dr_drot.w);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 6], dr_drot.x * dr_drot.x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 7], dr_drot.y * dr_drot.y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 8], dr_drot.z * dr_drot.z);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 9], dr_drot.w * dr_drot.w);
 
-    atomicAdd(&M_precon[x * num_params_per_gauss + 10], dr_dopacity * dr_dopacity);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 10], dr_dopacity * dr_dopacity);
 
-    atomicAdd(&M_precon[x * num_params_per_gauss + 11], dr_ddc.x * dr_ddc.x);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 12], dr_ddc.y * dr_ddc.y);
-    atomicAdd(&M_precon[x * num_params_per_gauss + 13], dr_ddc.z * dr_ddc.z);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 11], dr_ddc.x * dr_ddc.x);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 12], dr_ddc.y * dr_ddc.y);
+        atomicAdd(&M_precon[x * num_params_per_gauss + 13], dr_ddc.z * dr_ddc.z);
 
-    for(int i = 0; i < max_coeffs; i++){
-        atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * dr_dsh[i].x);
-        atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * dr_dsh[i].y);
-        atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * dr_dsh[i].z);
+        for(int i = 0; i < max_coeffs; i++){
+            atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * dr_dsh[i].x);
+            atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * dr_dsh[i].y);
+            atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * dr_dsh[i].z);
+        }
     }
 
-
 }
+
+// template<uint32_t C>
+// __global__ 
+// void diagJTJ(
+//     const float* J, 
+//     float* M_precon, 
+//     uint32_t N, 
+//     uint32_t M,
+//     int P, 
+//     int D, 
+//     int max_coeffs, // max_coeffs = M
+//     const float* means3D, //const float3* means3D,
+//     const int* radii,
+//     const float* dc,
+//     const float* shs,
+//     const bool* clamped,
+//     const float* opacities,
+//     const float* scales, //const glm::vec3* scales,
+//     const float* rotations, //const glm::vec4* rotations,
+//     const float scale_modifier,
+//     const float* cov3Ds,
+//     const float* viewmatrix,
+//     const float* projmatrix,
+//     const float focal_x, float focal_y,
+//     const float tan_fovx, float tan_fovy,
+//     const float* campos, //const glm::vec3* campos,
+//     bool antialiasing
+// ){
+//     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if(idx >= P*M) return;
+
+//     int x = idx % P;  // Gaussian index
+//     int y = idx / P;  // Pixel index
+
+//     // Calculate the residuals wrt intermideiary parameters
+//     int index= x + y * P;
+//     float dr_dmean2D_x = J[index*10];
+// 	float dr_dmean2D_y = J[index*10 + 1];
+// 	float dr_dconic2D_x = J[index*10 + 2] ;
+// 	float dr_conic2D_y = J[index*10 + 3];
+// 	float dr_dconic2D_w = J[index*10 + 4];
+//     float dr_dconics[4] = {dr_dconic2D_x, dr_conic2D_y, 0.0f, dr_dconic2D_w}; //Prepare for use with computeCov2DCUDA_device
+// 	float dr_dopacity = J[index*10 + 5];
+//     float3 dr_dmean2D = {dr_dmean2D_x, dr_dmean2D_y, 0.0f};
+
+//     float dr_dcolors[C] = {0.0f};
+//     for (int ch = 0; ch < C; ++ch) {
+//         dr_dcolors[ch] = J[index*10 + ch + 6];
+//     }
+//     float dr_dinvdepths = J[index*10 + 9];
+
+
+//     float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
+//     glm::vec4 dr_drot = glm::vec4(0.0f);
+//     glm::vec3 dr_dscale = glm::vec3(0.0f);
+//     glm::vec3 dr_ddc = glm::vec3(0.0f);
+//     float raw_dr_dsh[15*3] = {};
+//     glm::vec3* dr_dsh = (glm::vec3*)raw_dr_dsh;  
+//     float dr_dcov3D[6] = {}; 
+
+//     computeCov2DCUDA_device(
+//         P,
+//         (float3*)means3D,
+//         radii,
+//         cov3Ds,
+//         focal_x, focal_y,
+//         tan_fovx, tan_fovy,
+//         viewmatrix,
+//         opacities,
+//         &dr_dconics[0],
+//         &dr_dopacity,
+//         &dr_dinvdepths,
+//         &dr_dmean,
+//         &dr_dcov3D[0],
+//         antialiasing,
+//         x
+//     );
+
+//     preprocessCUDA_device<C>(
+//         P, D, max_coeffs,
+//         (float3*)means3D,
+//         radii,
+//         dc,
+//         shs,
+//         clamped,
+//         (glm::vec3*)scales,
+//         (glm::vec4*)rotations,
+//         scale_modifier,
+//         projmatrix,
+//         (glm::vec3*)campos,
+//         &dr_dmean2D,
+//         (glm::vec3*)&dr_dmean,
+//         &dr_dcolors[0],
+//         &dr_dcov3D[0],
+//         &dr_ddc[0],
+//         (float*)&dr_dsh[0],
+//         &dr_dscale,
+//         &dr_drot,
+//         &dr_dopacity,
+//         x
+//     );
+
+//     const int num_params_per_gauss = 59;
+
+//     glm::vec3 scale = {scales[x + 0], scales[x + 1], scales[x + 2]};
+//     dr_dscale.x = dr_dscale.x * scale.x;
+//     dr_dscale.y = dr_dscale.y * scale.y;
+//     dr_dscale.z = dr_dscale.z * scale.z;
+
+//     float real_opacity_val = log(opacities[x]/(1-opacities[x]));
+//     dr_dopacity = dr_dopacity * sigmoid_grad(real_opacity_val);
+
+//     float4 rot_original = {rotations[x+0],rotations[x+1],rotations[x+2],rotations[x+3]};
+
+//     float4 dr_drot_un = dnormvdv(rot_original, float4{dr_drot.x, dr_drot.y, dr_drot.z, dr_drot.w});
+//     dr_drot.x = dr_drot_un.x;
+//     dr_drot.y = dr_drot_un.y;
+//     dr_drot.z = dr_drot_un.z;
+//     dr_drot.w = dr_drot_un.w;
+
+
+
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 0], dr_dmean.x * dr_dmean.x);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 1], dr_dmean.y * dr_dmean.y);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 2], dr_dmean.z * dr_dmean.z);
+
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 3], dr_dscale.x * dr_dscale.x);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 4], dr_dscale.y * dr_dscale.y);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 5], dr_dscale.z * dr_dscale.z);
+
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 6], dr_drot.x * dr_drot.x);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 7], dr_drot.y * dr_drot.y);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 8], dr_drot.z * dr_drot.z);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 9], dr_drot.w * dr_drot.w);
+
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 10], dr_dopacity * dr_dopacity);
+
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 11], dr_ddc.x * dr_ddc.x);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 12], dr_ddc.y * dr_ddc.y);
+//     atomicAdd(&M_precon[x * num_params_per_gauss + 13], dr_ddc.z * dr_ddc.z);
+
+//     for(int i = 0; i < max_coeffs; i++){
+//         atomicAdd(&M_precon[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * dr_dsh[i].x);
+//         atomicAdd(&M_precon[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * dr_dsh[i].y);
+//         atomicAdd(&M_precon[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * dr_dsh[i].z);
+//     }
+
+
+// }
 
 
 const char* get_param_name(int index){
@@ -1400,6 +2188,8 @@ void GaussNewton::gaussNewtonUpdate(
         cov3Ds, 
         viewmatrix, 
         projmatrix, 
+        width,
+        height,
         focal_x, 
         focal_y, 
         tan_fovx, 
@@ -1408,10 +2198,12 @@ void GaussNewton::gaussNewtonUpdate(
         antialiasing
     );
 
-    // for(int i = 0; i < N; i++){
-    //     cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
-    // }
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    }
+
+    // return;
 
 
 
@@ -1440,6 +2232,8 @@ void GaussNewton::gaussNewtonUpdate(
         cov3Ds, 
         viewmatrix, 
         projmatrix, 
+        width,
+        height,
         focal_x, 
         focal_y, 
         tan_fovx, 
@@ -1488,6 +2282,8 @@ void GaussNewton::gaussNewtonUpdate(
         cov3Ds, 
         viewmatrix, 
         projmatrix, 
+        width,
+        height,
         focal_x, 
         focal_y, 
         tan_fovx, 
@@ -1573,6 +2369,8 @@ void GaussNewton::gaussNewtonUpdate(
             cov3Ds, 
             viewmatrix, 
             projmatrix, 
+            width,
+            height,
             focal_x, 
             focal_y, 
             tan_fovx, 

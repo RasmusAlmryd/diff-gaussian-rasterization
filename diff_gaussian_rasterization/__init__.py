@@ -332,8 +332,12 @@ class SparseGaussianAdam(torch.optim.Adam):
             if (group['name'] == 'f_dc' or group['name'] == 'scaling'):
                 print(group['name'])
                 print(param)
+                print(param.grad)
+                
 
             # _C.GN([params], [params.grad], ..)
+
+        # raise Exception('end of step adam')
 
 
 # Add Gauss Newton
@@ -410,7 +414,8 @@ class GaussNewton(Optimizer):
                 continue
             
             print(group['name'])
-            print(param.grad)
+            # print(param.grad)
+            print(param)
 
             # Lazy state initialization from adam, try to fix this to get above 3000 iterations w/o crash
             state = self.state[param]
@@ -617,7 +622,7 @@ class GaussNewton(Optimizer):
 
                 offset += numel
                 
-        raise Exception("Work in progress")
+        # raise Exception("Work in progress")
         
 
     def find_parameter_group(self, name):

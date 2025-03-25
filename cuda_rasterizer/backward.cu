@@ -673,6 +673,24 @@ PerGaussianRenderCUDA(
 			
 
 			// maybe store: dL_dalpha[channel], d.x, d.y, G, (dL_invdepth, weight)
+
+			int index= gaussian_idx + pix_id * P;
+			atomicAdd(&dr_dxs[index*13 + 0], d.x);
+			atomicAdd(&dr_dxs[index*13 + 1], d.y);
+			atomicAdd(&dr_dxs[index*13 + 2], G);
+			atomicAdd(&dr_dxs[index*13 + 3], weight * dL_invdepth);
+			for (int ch = 0; ch < C; ++ch) {
+				atomicAdd(&dr_dxs[index*13 + ch + 4], dL_dcolortemp[ch]);
+			}
+			for (int ch = 0; ch < C; ++ch) {
+				atomicAdd(&dr_dxs[index*13 + ch + 7], dL_dalpha_channel[ch]);
+			}
+			atomicAdd(&dr_dxs[index*13 + 10], con_o.w);
+			atomicAdd(&dr_dxs[index*13 + 11], dG_ddelx);
+			atomicAdd(&dr_dxs[index*13 + 12], dG_ddely);
+
+
+
 			
 			// gaussian_offset(gaussian_idx) = accum pixels
 			// gaussian_contrib = num pixels gaussian contrib
@@ -712,32 +730,32 @@ PerGaussianRenderCUDA(
 			//atomicAdd(&dr_dxs[pixel_offset-1], dL_dG); 
 			//atomicAdd(&dr_dxs[gaussian_idx + pix_id * P ], dL_dG); 
 
-			int index= gaussian_idx + pix_id * P;
-			atomicAdd(&dr_dxs[index*10 + 0], tmp_x);
-			atomicAdd(&dr_dxs[index*10 + 1], tmp_y);
-			atomicAdd(&dr_dxs[index*10 + 2], -0.5f * gdx * d.x * dL_dG);
-			atomicAdd(&dr_dxs[index*10 + 3], -0.5f * gdx * d.y * dL_dG);
-			atomicAdd(&dr_dxs[index*10 + 4], -0.5f * gdy * d.y * dL_dG);
-			atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
-			if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-				printf("g_id: %d (%d), pix_id: %d | ", gaussian_idx, splat_idx_global, pix_id);
-			}
-			for (int ch = 0; ch < C; ++ch) {
-				if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-					printf("dL_dpixel[%d]: %g (%g), ", ch, dL_dpixel[ch], dL_dalpha_channel[ch]);
-				}
-				atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
-				// if(gaussian_idx == 0){
-				// 	printf("dl_dcolor[%d]: %g (%g), ", ch, dL_dcolortemp[ch], dL_dpixel[ch]);
-				// }
-			}
-			if(gaussian_idx == 0 && dL_dpixel[0] != 0){
-				printf("\n");
-			}
-			// if(gaussian_idx == 0){
+			// int index= gaussian_idx + pix_id * P;
+			// atomicAdd(&dr_dxs[index*10 + 0], tmp_x);
+			// atomicAdd(&dr_dxs[index*10 + 1], tmp_y);
+			// atomicAdd(&dr_dxs[index*10 + 2], -0.5f * gdx * d.x * dL_dG);
+			// atomicAdd(&dr_dxs[index*10 + 3], -0.5f * gdx * d.y * dL_dG);
+			// atomicAdd(&dr_dxs[index*10 + 4], -0.5f * gdy * d.y * dL_dG);
+			// atomicAdd(&dr_dxs[index*10 + 5], G * dL_dalpha);
+			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+			// 	printf("g_id: %d (%d), pix_id: %d | ", gaussian_idx, splat_idx_global, pix_id);
+			// }
+			// for (int ch = 0; ch < C; ++ch) {
+			// 	if(gaussian_idx == 0 && dL_dpixel[0] != 0){
+			// 		printf("dL_dpixel[%d]: %g (%g), ", ch, dL_dpixel[ch], dL_dalpha_channel[ch]);
+			// 	}
+			// 	atomicAdd(&dr_dxs[index*10 + ch + 6], dL_dcolortemp[ch]);
+			// 	// if(gaussian_idx == 0){
+			// 	// 	printf("dl_dcolor[%d]: %g (%g), ", ch, dL_dcolortemp[ch], dL_dpixel[ch]);
+			// 	// }
+			// }
+			// if(gaussian_idx == 0 && dL_dpixel[0] != 0){
 			// 	printf("\n");
 			// }
-			atomicAdd(&dr_dxs[index*10 + 9], weight * dL_invdepth);
+			// // if(gaussian_idx == 0){
+			// // 	printf("\n");
+			// // }
+			// atomicAdd(&dr_dxs[index*10 + 9], weight * dL_invdepth);
 
 			// if(pixel_offset == 0) {
 			// 	// printf("\n");
