@@ -329,10 +329,10 @@ class SparseGaussianAdam(torch.optim.Adam):
             #     print(param)
             _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
 
-            if (group['name'] == 'f_dc' or group['name'] == 'scaling'):
-                print(group['name'])
-                print(param)
-                print(param.grad)
+            # if (group['name'] == 'f_dc' or group['name'] == 'scaling'):
+            #     print(group['name'])
+            #     print(param)
+            #     print(param.grad)
                 
 
             # _C.GN([params], [params.grad], ..)
@@ -363,13 +363,13 @@ class GaussNewton(Optimizer):
         f_dc_group = self.find_parameter_group('f_dc')
         f_rest_group = self.find_parameter_group('f_rest')
 
-        means3D = means3D_group['params'][0]
+        means3D = means3D_group['params'][0].detach()
         scales  = torch.exp(scales_group['params'][0].detach())
         # rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
         rotations = rotations_group['params'][0].detach()
         opacities = torch.sigmoid(opacities_group['params'][0].detach())
-        f_dc = f_dc_group['params'][0]
-        f_rest = f_rest_group['params'][0]
+        f_dc = f_dc_group['params'][0].detach()
+        f_rest = f_rest_group['params'][0].detach()
 
         # print(rotations)
         # print(gaussian_model._rotation)
@@ -587,7 +587,11 @@ class GaussNewton(Optimizer):
         #         offset += numel
 
 
-        if delta.isnan().any():
+        if delta.isnan().any() or torch.all(delta == 0):
+            print('not acceptable delta')
+            del sparse_jacobian.values 
+            del sparse_jacobian.indices
+            del sparse_jacobian.p_sum 
             return
 
 
@@ -610,6 +614,7 @@ class GaussNewton(Optimizer):
                 # if(group['name'] == 'scaling'):
                 #     param.data += torch.ones_like(param) * 0.1
                 #     continue
+                # if group['name'] != 'xyz':
                 param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
                 # if(group['name'] == 'f_dc'):
                 #     param.data *= 0

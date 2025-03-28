@@ -625,20 +625,25 @@ PerGaussianRenderCUDA(
 			// add the gradient contribution of this pixel's colour to the gaussian
 			float bg_dot_dpixel = 0.0f;
 			float dL_dalpha = 0.0f;
-			float dL_dcolortemp[C] = {0.0f};
-			float dL_dalpha_channel[C] = {0.0f};
+			float dr_dcolor[C] = {0.0f};
+			float dr_dalpha_channel[C] = {0.0f};
+			
+			const float dr_dch = -1.0f;
+			
 			ard += weight * invd;
-
 
 			for (int ch = 0; ch < C; ++ch) {
 				ar[ch] += weight * c[ch]; // TODO: check
 				const float &dL_dchannel = dL_dpixel[ch];
 				Register_dL_dcolors[ch] += weight * dL_dchannel;
-				dL_dcolortemp[ch] = weight * dL_dchannel;
+
+				dr_dcolor[ch] = weight * dr_dch;
+				// dL_dcolortemp[ch] = weight * dL_dchannel;
 				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
-				dL_dalpha_channel[ch] = ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel; // maybe
-				dL_dalpha_channel[ch] += ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
-				dL_dalpha_channel[ch] += (-T_final / (1.0f - alpha)) * (bg_color[ch] * dL_dpixel[ch]);
+				// dL_dalpha_channel[ch] = ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel; // maybe
+				dr_dalpha_channel[ch] = ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; // maybe
+				// dL_dalpha_channel[ch] += ((invd * T) - (1.0f / (1.0f - alpha)) * (-ard)) * dL_invdepth;
+				// dL_dalpha_channel[ch] += (-T_final / (1.0f - alpha)) * (bg_color[ch] * dL_dpixel[ch]);
 
 				bg_dot_dpixel += bg_color[ch] * dL_dpixel[ch];
 			}
@@ -680,10 +685,10 @@ PerGaussianRenderCUDA(
 			atomicAdd(&dr_dxs[index*13 + 2], G);
 			atomicAdd(&dr_dxs[index*13 + 3], weight * dL_invdepth);
 			for (int ch = 0; ch < C; ++ch) {
-				atomicAdd(&dr_dxs[index*13 + ch + 4], dL_dcolortemp[ch]);
+				atomicAdd(&dr_dxs[index*13 + ch + 4], dr_dcolor[ch]);
 			}
 			for (int ch = 0; ch < C; ++ch) {
-				atomicAdd(&dr_dxs[index*13 + ch + 7], dL_dalpha_channel[ch]);
+				atomicAdd(&dr_dxs[index*13 + ch + 7], dr_dalpha_channel[ch]);
 			}
 			atomicAdd(&dr_dxs[index*13 + 10], con_o.w);
 			atomicAdd(&dr_dxs[index*13 + 11], dG_ddelx);

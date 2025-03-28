@@ -672,6 +672,16 @@ void calc_b_non_sparse(
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
+    if(idx == 0){
+        printf("conic_w: %g \n", conic_w);
+        printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
+    }
+
+    // if(dr_dcolors[0] != 0 || dr_dcolors[1] != 0 || dr_dcolors[2] != 0){
+    //     printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
+
+    // }
+
     for (int ch = 0; ch < C; ch++) {
         
         // Helpful reusable temporary variables
@@ -699,6 +709,11 @@ void calc_b_non_sparse(
         dL_dcolortemp.x *= ch == 0 ? 1 : 0;
         dL_dcolortemp.y *= ch == 1 ? 1 : 0;
         dL_dcolortemp.z *= ch == 2 ? 1 : 0;
+
+        // if(dr_dcolors[0] != 0 || dr_dcolors[1] != 0 || dr_dcolors[2] != 0){
+        // if(idx == 455533){
+        //     printf("masked color[%d]: x: %g, y: %g, z: %g \n", idx, dL_dcolortemp.x, dL_dcolortemp.y, dL_dcolortemp.z);
+        // }
 
         float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
         glm::vec4 dr_drot = glm::vec4(0.0f);
@@ -2203,7 +2218,17 @@ void GaussNewton::gaussNewtonUpdate(
         printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
     }
 
-    // return;
+    float* check_b;
+    float h_check_b;
+    cudaMalloc(&check_b, sizeof(float));
+    cudaMemset(check_b, 0, sizeof(float));
+    dot<<<(N+255)/256, 256>>>(b, b, check_b, N);
+    cudaMemcpy(&h_check_b, check_b, sizeof(float), cudaMemcpyDeviceToHost);
+    if(h_check_b == 0){
+        printf("PCG: no data");
+        cudaFree(b);
+        return;
+    }
 
 
 
@@ -2446,6 +2471,10 @@ void GaussNewton::gaussNewtonUpdate(
     cudaFree(z);
     cudaFree(p);
     cudaFree(Ap);
+
+    // cudaFree(sparse_J_p_sum);
+    // cudaFree(sparse_J_indices);
+    // cudaFree(sparse_J_values);
 
 
 }
