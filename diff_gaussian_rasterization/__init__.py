@@ -94,9 +94,6 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.debug
         )
 
-        # print('activated scales')
-        # print(scales)
-        # print('')
 
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
@@ -348,7 +345,7 @@ class GaussNewton(Optimizer):
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, loss_residuals, radii, gaussian_model, iteration):
+    def step(self, visibility, loss_residuals, radii, gaussian_model, iteration, gt_image):
 
         
         step_gamma = self.defaults['step_gamma']
@@ -365,8 +362,8 @@ class GaussNewton(Optimizer):
 
         means3D = means3D_group['params'][0].detach()
         scales  = torch.exp(scales_group['params'][0].detach())
-        # rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
-        rotations = rotations_group['params'][0].detach()
+        rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
+        # rotations = rotations_group['params'][0].detach()
         opacities = torch.sigmoid(opacities_group['params'][0].detach())
         f_dc = f_dc_group['params'][0].detach()
         f_rest = f_rest_group['params'][0].detach()
@@ -595,6 +592,50 @@ class GaussNewton(Optimizer):
             return
 
 
+        def error(delta, alpha):
+            with torch.no_grad():
+                offset = 0
+                new_means3D = torch.clone(means3D)
+                new_scales = torch.clone(scales)
+                new_rotations = torch.clone(rotations)
+                new_opacities = torch.clone(opacities)
+                new_f_dc = torch.clone(f_dc)
+                new_f_rest = torch.clone(f_rest)
+                print('mean before: ', new_means3D)
+                new_params = [new_means3D,new_scales,new_rotations,new_opacities,new_f_dc,new_f_rest]
+
+                for idx, param in enumerate([means3D,scales,rotations,opacities,f_dc,f_rest]):
+                    numel = param.numel()
+                    new_params[idx] += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+                    offset += numel
+
+                print('mean after: ', new_means3D)
+                
+                color, _, _ = rasterize_gaussians(new_means3D, None, new_f_dc, new_f_rest, torch.Tensor([]), new_opacities,new_scales, new_rotations, torch.Tensor([]), sparse_jacobian.raster_settings, None)
+
+                loss = (gt_image - color) ** 2
+                loss = loss.sum()
+                return loss.item()
+
+
+        mu_prev = float('inf')
+        alpha = 1.0
+        gamma = 0.7
+        while alpha >= 1e-3:
+            mu = error(delta, alpha)
+            print('alpha: ', alpha)
+            print('error: ', mu)
+            if mu > mu_prev:
+                alpha = alpha/gamma
+                break
+            alpha *= gamma
+            mu_prev = mu
+        
+        # return
+    
+        # alpha = 1
+        print('final alpha: ', alpha)
+
         offset = 0
         with torch.no_grad():
             for group in [means3D_group, scales_group, rotations_group, opacities_group, f_dc_group, f_rest_group]:
@@ -615,7 +656,8 @@ class GaussNewton(Optimizer):
                 #     param.data += torch.ones_like(param) * 0.1
                 #     continue
                 # if group['name'] != 'xyz':
-                param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+                # param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+                param.data += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
                 # if(group['name'] == 'f_dc'):
                 #     param.data *= 0
                 #     param.data += torch.ones(param.shape).cuda() * 1.77
@@ -628,6 +670,7 @@ class GaussNewton(Optimizer):
                 offset += numel
                 
         # raise Exception("Work in progress")
+        
         
 
     def find_parameter_group(self, name):

@@ -448,7 +448,6 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	bool* clamped,
 	bool debug)
 {
-	printf("start \n");
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
@@ -504,7 +503,6 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		antialiasing
 	), debug)
 
-	printf("preprocess\n");
 
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
@@ -537,7 +535,6 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(, debug)
 
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
-	printf("tilegrid: x: %d, y: %d", tile_grid.x, tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
@@ -549,8 +546,6 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
-	printf("num_rendered before: %d\n", num_rendered);
-	printf("sort pair \n");
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
@@ -565,13 +560,11 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(imgState.bucket_count_scanning_space, imgState.bucket_count_scan_size, imgState.bucket_count, imgState.bucket_offsets, num_tiles), debug)
 	unsigned int bucket_sum;
 	CHECK_CUDA(cudaMemcpy(&bucket_sum, imgState.bucket_offsets + num_tiles - 1, sizeof(unsigned int), cudaMemcpyDeviceToHost), debug);
-	printf("bucket\n");
 	// create a state to store. size is number is the total number of buckets * block_size
 	size_t sample_chunk_size = required<SampleState>(bucket_sum);
 	char* sample_chunkptr = sampleBuffer(sample_chunk_size);
 	SampleState sampleState = SampleState::fromChunk(sample_chunkptr, bucket_sum);
 
-	printf("allocating\n");
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
@@ -601,7 +594,6 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 
 	//gaussian_contrib len = num_rendered (duplicate gaussians)
 	int num_residuals;
-	printf("num_rendered: %d\n", num_rendered);
 	if(num_rendered > 0){
 		CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
 
