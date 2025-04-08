@@ -477,7 +477,9 @@ PerGaussianRenderCUDA(
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dinvdepths,
 	float* __restrict__ dr_dxs,
-	uint64_t* __restrict__ residual_index
+	uint64_t* __restrict__ residual_index,
+	const int num_views,
+	const int view_index
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -679,7 +681,8 @@ PerGaussianRenderCUDA(
 
 			// maybe store: dL_dalpha[channel], d.x, d.y, G, (dL_invdepth, weight)
 
-			int index= gaussian_idx + pix_id * P;
+			int index= gaussian_idx + pix_id * P ;
+			// int index= (gaussian_idx + pix_id * P ) + view_idx * num_images * P;
 			atomicAdd(&dr_dxs[index*13 + 0], d.x);
 			atomicAdd(&dr_dxs[index*13 + 1], d.y);
 			atomicAdd(&dr_dxs[index*13 + 2], G);
@@ -913,7 +916,10 @@ void BACKWARD::render(
 	float* dL_dcolors,
 	float* dL_dinvdepths,
 	float* dr_dxs,
-	uint64_t* residual_index)
+	uint64_t* residual_index,
+	const int num_views,
+	const int view_index
+)
 {
 	const int THREADS = 32;
 	PerGaussianRenderCUDA<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
@@ -942,6 +948,8 @@ void BACKWARD::render(
 		dL_dcolors, 
 		dL_dinvdepths,
 		dr_dxs,
-		residual_index
+		residual_index,
+		num_views,
+		view_index
 		);
 }

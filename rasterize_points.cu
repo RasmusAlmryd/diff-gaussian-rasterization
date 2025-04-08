@@ -25,11 +25,122 @@
 #include "cuda_rasterizer/adam.h"
 #include "cuda_rasterizer/gauss_newton.h"
 #include "cuda_rasterizer/gauss_newton_simple.h"
+#include "rasterize_points.h"
 #include <fstream>
 #include <string>
 #include <functional>
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
+
+// struct Raster_settings raster_settings;
+
+// struct Raster_settings{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+
+// 	// Raster_settings(
+// 	// 	const int image_heigh,
+// 	// 	const int image_width,
+// 	// 	const float tanfovx,
+// 	// 	const float tanfovy,
+// 	// 	const torch::Tensor &bg,
+// 	// 	const float scale_modifier,
+// 	// 	const torch::Tensor &viewmatrix,
+// 	// 	const torch::Tensor &projmatrix,
+// 	// 	const int sh_degree,
+// 	// 	const torch::Tensor &campo,
+// 	// 	const bool prefiltered,
+// 	// 	const bool debug,
+// 	// 	const bool antialiasing,
+// 	// 	const int num_view,
+// 	// 	const int view_inde,
+// 	// )()image_height(image_height), image_width(image_width), tanfovx()tanfovy()bg()scale_modifier()viewmatrix()projmatrix()sh_degree()campo()prefiltered()debug()antialiasing()num_view()view_inde()
+// } ;
+
+// typedef struct{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+
+// 	Raster_settings(
+// 		int image_height,
+// 		int image_width,
+// 		float tanfovx ,
+// 		float tanfovy ,
+// 		const torch::Tensor &bg ,
+// 		float scale_modifier ,
+// 		const torch::Tensor &viewmatrix ,
+// 		const torch::Tensor &projmatrix ,
+// 		int sh_degree ,
+// 		const torch::Tensor &campos,
+// 		bool prefiltered ,
+// 		bool debug ,
+// 		bool antialiasing ,
+// 		int num_views,
+// 		int view_index,
+// 	): image_height(image_height),image_width(image_width),tanfovx(tanfovx),tanfovy(tanfovy),bg(bg),scale_modifier(scale_modifier),viewmatrix(viewmatrix),projmatrix(projmatrix),sh_degree(sh_degree),campos(campos),prefiltered(prefiltered),debug(debug),antialiasing(antialiasing),num_views(num_views),view_index(view_index){}
+// } Raster_settings;
+
+// struct Raster_settings{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+
+// 	Raster_settings(
+// 		int image_height,
+// 		int image_width,
+// 		float tanfovx ,
+// 		float tanfovy ,
+// 		const torch::Tensor &bg ,
+// 		float scale_modifier ,
+// 		const torch::Tensor &viewmatrix ,
+// 		const torch::Tensor &projmatrix ,
+// 		int sh_degree ,
+// 		const torch::Tensor &campos,
+// 		bool prefiltered ,
+// 		bool debug ,
+// 		bool antialiasing ,
+// 		int num_views,
+// 		int view_index,
+// 	): image_height(image_height),image_width(image_width),tanfovx(tanfovx),tanfovy(tanfovy),bg(bg),scale_modifier(scale_modifier),viewmatrix(viewmatrix),projmatrix(projmatrix),sh_degree(sh_degree),campos(campos),prefiltered(prefiltered),debug(debug),antialiasing(antialiasing),num_views(num_views),view_index(view_index){}
+// };
 
 
 std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
@@ -78,6 +189,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool antialiasing,
+	const int num_views,
+	const int view_index,
 	const bool debug)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
@@ -144,6 +257,8 @@ RasterizeGaussiansCUDA(
 		tan_fovx,
 		tan_fovy,
 		prefiltered,
+		num_views,
+		view_index,
 		out_color.contiguous().data<float>(),
 		out_invdepth.contiguous().data<float>(),
 		antialiasing,
@@ -188,6 +303,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& sampleBuffer,
 	const torch::Tensor& residualBuffer,
 	const bool antialiasing,
+	const int num_views,
+	const int view_index,
 	const bool debug) 
 {
   const int P = means3D.size(0);
@@ -214,55 +331,57 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   int num_images = 1;
 
-  torch::Tensor dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options());
+  torch::Tensor dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options()); //accessed in right order?
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
   torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());
 
   if(P != 0)
   {  
-	  CudaRasterizer::Rasterizer::backward(P, degree, M, R, B, K,
-	  background.contiguous().data<float>(),
-	  W, H, 
-	  means3D.contiguous().data<float>(),
-	  dc.contiguous().data<float>(),
-	  sh.contiguous().data<float>(),
-	  colors.contiguous().data<float>(),
-	  opacities.contiguous().data<float>(),	
-	  scales.data_ptr<float>(),
-	  scale_modifier,
-	  rotations.data_ptr<float>(),
-	  cov3D_precomp.contiguous().data<float>(),
-	  viewmatrix.contiguous().data<float>(),
-	  projmatrix.contiguous().data<float>(),
-	  campos.contiguous().data<float>(),
-	  tan_fovx,
-	  tan_fovy,
-	  radii.contiguous().data<int>(),
-	  reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr()),
-	  reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr()),
-	  reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
-	  reinterpret_cast<char*>(sampleBuffer.contiguous().data_ptr()),
-	  reinterpret_cast<char*>(residualBuffer.contiguous().data_ptr()),
-	  dL_dout_color.contiguous().data<float>(),
-	  dL_dout_invdepth.contiguous().data<float>(),
-	  dL_dmeans2D.contiguous().data<float>(),
-	  dL_dconic.contiguous().data<float>(),  
-	  dL_dopacity.contiguous().data<float>(),
-	  dL_dcolors.contiguous().data<float>(),
-	  dL_dinvdepths.contiguous().data<float>(),
-	  dL_dmeans3D.contiguous().data<float>(),
-	  dL_dcov3D.contiguous().data<float>(),
-	  dL_ddc.contiguous().data<float>(),
-	  dL_dsh.contiguous().data<float>(),
-	  dL_dscales.contiguous().data<float>(),
-	  dL_drotations.contiguous().data<float>(),
-	  dr_dxs.contiguous().data<float>(),
-	  residual_index.contiguous().data<uint64_t>(),
-	  p_sum.contiguous().data<uint32_t>(),
-	  cov3D.contiguous().data<float>(),
-	  antialiasing,
-	  debug);
+	CudaRasterizer::Rasterizer::backward(P, degree, M, R, B, K,
+		background.contiguous().data<float>(),
+		W, H, 
+		means3D.contiguous().data<float>(),
+		dc.contiguous().data<float>(),
+		sh.contiguous().data<float>(),
+		colors.contiguous().data<float>(),
+		opacities.contiguous().data<float>(),	
+		scales.data_ptr<float>(),
+		scale_modifier,
+		rotations.data_ptr<float>(),
+		cov3D_precomp.contiguous().data<float>(),
+		viewmatrix.contiguous().data<float>(),
+		projmatrix.contiguous().data<float>(),
+		campos.contiguous().data<float>(),
+		tan_fovx,
+		tan_fovy,
+		radii.contiguous().data<int>(),
+		reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr()),
+		reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr()),
+		reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
+		reinterpret_cast<char*>(sampleBuffer.contiguous().data_ptr()),
+		reinterpret_cast<char*>(residualBuffer.contiguous().data_ptr()),
+		dL_dout_color.contiguous().data<float>(),
+		dL_dout_invdepth.contiguous().data<float>(),
+		dL_dmeans2D.contiguous().data<float>(),
+		dL_dconic.contiguous().data<float>(),  
+		dL_dopacity.contiguous().data<float>(),
+		dL_dcolors.contiguous().data<float>(),
+		dL_dinvdepths.contiguous().data<float>(),
+		dL_dmeans3D.contiguous().data<float>(),
+		dL_dcov3D.contiguous().data<float>(),
+		dL_ddc.contiguous().data<float>(),
+		dL_dsh.contiguous().data<float>(),
+		dL_dscales.contiguous().data<float>(),
+		dL_drotations.contiguous().data<float>(),
+		dr_dxs.contiguous().data<float>(),
+		residual_index.contiguous().data<uint64_t>(),
+		p_sum.contiguous().data<uint32_t>(),
+		cov3D.contiguous().data<float>(),
+		antialiasing,
+		num_views,
+		view_index,
+		debug);
   }
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum, cov3D);
@@ -333,6 +452,7 @@ void gaussNewtonUpdate(
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
+	const std::vector<Raster_settings> &settings,
 
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
     torch::Tensor &sparse_J_values,
@@ -346,6 +466,12 @@ void gaussNewtonUpdate(
     const uint32_t M,  // number of residuals
     const uint32_t sparse_J_entries
 ){
+
+	// for(Raster_settings r: settings){
+	// 	printf("width: %d, height: %d\n", r.image_width, r.image_height);
+	// }
+
+	// return;
 	GaussNewton::gaussNewtonUpdate(
 		P, D, max_coeffs, width, height, // max_coeffs = M
 		means3D.contiguous().data<float>(),

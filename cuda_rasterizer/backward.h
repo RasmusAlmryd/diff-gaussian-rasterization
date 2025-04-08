@@ -47,7 +47,10 @@ namespace BACKWARD
 		float* dL_dcolors,
 		float* dL_dinvdepths,
 		float* dr_dxs,
-		uint64_t* residual_index);
+		uint64_t* residual_index,
+		const int num_views,
+		const int view_index
+	);
 
 	void preprocess(
 		int P, int D, int M,

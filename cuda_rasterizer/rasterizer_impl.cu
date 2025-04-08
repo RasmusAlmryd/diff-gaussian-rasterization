@@ -172,6 +172,7 @@ __global__ void duplicateWithKeys(
 				uint64_t key = y * grid.x + x;
 				key <<= 32;
 				key |= *((uint32_t*)&depths[idx]);
+				// printf("[%llu] max_opac: %f, opac threshold: %f, conic_w: %f\n",key, max_opac_factor, opacity_factor_threshold, co.w);
 				if (max_opac_factor <= opacity_factor_threshold) {
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
@@ -189,6 +190,18 @@ __global__ void duplicateWithKeys(
 			gaussian_keys_unsorted[off] = key;
 		}
 	}
+	// else{
+	// 	uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
+	// 	const uint32_t offset_to = offsets[idx];
+	// 	for (; off < offset_to; ++off) {
+	// 		uint64_t key = (uint32_t) -1;
+	// 		key <<= 32;
+	// 		const float depth = FLT_MAX;
+	// 		key |= *((uint32_t*)&depth);
+	// 		gaussian_values_unsorted[off] = static_cast<uint32_t>(-1);
+	// 		gaussian_keys_unsorted[off] = key;
+	// 	}
+	// }
 }
 
 // Check keys to see if it is at the start/end of one tile's range in 
@@ -205,13 +218,14 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	uint64_t key = point_list_keys[idx];
 	uint32_t currtile = key >> 32;
 	bool valid_tile = currtile != (uint32_t) -1;
-	// printf("idx: %d, current tile: %d, valid: %d\n",idx, currtile, valid_tile);
-	if (idx == 0)
-		if(valid_tile)
-			ranges[currtile].x = 0;
-		else
-			ranges[0].x = 0;
+	// printf("idx: %d, key: %llu, current tile: %zu, valid: %d\n",idx, key, currtile, valid_tile);
+	// if(!valid_tile){
+	// 	printf("not valid tile");
+	// }
 
+	if (idx == 0 )
+		// if(valid_tile)
+		ranges[currtile].x = 0;
 	else
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
@@ -224,6 +238,7 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	}
 	if (idx == L - 1 && valid_tile)
 		ranges[currtile].y = L;
+	
 }
 
 // for each tile, see how many buckets/warps are needed to store the state
@@ -359,6 +374,17 @@ __global__ void set(int N, uint32_t* where, int* space)
 	space[off] = 1;
 }
 
+__global__ void allEqual(int N, int num, int* space, bool* result){
+	int idx = threadIdx.x + blockDim.x * blockIdx.x;
+	if(idx >= N)
+		return;
+
+	if(space[idx] != num){
+		*result = false;
+	}
+}
+
+
 // calculate number of pixels/residuals a duplicate gaussian contributes to
 __global__
 void perGaussianContribCount(
@@ -441,6 +467,8 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	const float* cam_pos,
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
+	const int num_views,
+	const int view_index,
 	float* out_color,
 	float* invdepth,
 	bool antialiasing,
@@ -454,6 +482,8 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	size_t chunk_size = required<GeometryState>(P);
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+
+	// CHECK_CUDA(cudaMemset(chunkptr, 0, chunk_size), P);
 
 	if (radii == nullptr)
 	{
@@ -472,6 +502,12 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	{
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
+
+	// for(int i = 0; i < P; i++){
+	// 	uint32_t temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &geomState.tiles_touched[i], sizeof(uint32_t), cudaMemcpyDeviceToHost), debug);
+	// 	printf("tiles touched[%d]: %d\n", i, temp);
+	// }
 
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	CHECK_CUDA(FORWARD::preprocess(
@@ -503,17 +539,51 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		antialiasing
 	), debug)
 
+	bool any_visible;
+	bool* all_zero;
+	cudaMalloc(&all_zero, sizeof(bool));
+	cudaMemset(all_zero, 1, sizeof(bool));
+	allEqual<<<(P + 255) / 256, 256>>>(P, 0, radii, all_zero);
+	cudaMemcpy(&any_visible, all_zero, sizeof(bool), cudaMemcpyDeviceToHost);
+	any_visible = !any_visible;
+	printf("any_visible: %d\n", any_visible);
+	// if(!any_visible){
+	// 	// return std::make_tuple(num_rendered, num_residuals, bucket_sum);
+	// 	return std::make_tuple(0, 0, 0);
+	// }
+
+	cudaFree(all_zero);
 
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
+
+	for(int i = 0; i < P; i++){
+		int temp;
+		CHECK_CUDA(cudaMemcpy(&temp, &radii[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+		printf("radii[%d]: %d\n", i, temp);
+	}
+
+	// for(int i = 0; i < P; i++){
+	// 	uint32_t temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &geomState.tiles_touched[i], sizeof(uint32_t), cudaMemcpyDeviceToHost), debug);
+	// 	printf("tiles touched[%d]: %d\n", i, temp);
+	// }
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
+	// for(int i = 0; i < P; i++){
+	// 	uint32_t temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &geomState.point_offsets[i], sizeof(uint32_t), cudaMemcpyDeviceToHost), debug);
+	// 	printf("prefix sum[%d]: %d\n", i, temp);
+	// }
+
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
 	int num_rendered;
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	printf("forward: num_rendered: %d\n", num_rendered);
 
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
@@ -546,6 +616,13 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
+	for(int i = 0; i < min(num_rendered, 1); i++){
+		uint64_t temp;
+		CHECK_CUDA(cudaMemcpy(&temp, &binningState.point_list_keys[i], sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
+		uint32_t tile = temp >> 32;
+		printf("key[%d]: full: %llu, tile: %zu \n", i, temp, tile);
+	}
+
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
@@ -553,6 +630,12 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 			binningState.point_list_keys,
 			imgState.ranges);
 	CHECK_CUDA(, debug)
+
+	// for(int i = 0; i < tile_grid.x * tile_grid.y; i++){
+	// 	uint2 temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &imgState.ranges[i], sizeof(uint2), cudaMemcpyDeviceToHost), debug);
+	// 	printf("range[%d]: x: %d, y: %d\n", i, temp.x, temp.y);
+	// }
 
  	// bucket count
 	int num_tiles = tile_grid.x * tile_grid.y;
@@ -593,7 +676,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
 
 	//gaussian_contrib len = num_rendered (duplicate gaussians)
-	int num_residuals;
+	int num_residuals = 0;
 	if(num_rendered > 0){
 		CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
 
@@ -654,7 +737,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		// printf("num_residuals: %d \n", num_residuals);
 		
 		// throw std::invalid_argument("temp exception.. REMOVE");
-		// printf("num residuals: %d", num_residuals);
+		printf("num residuals: %d", num_residuals);
 		size_t residual_chunk_size = required<ResidualState>(num_residuals);
 		char* residual_chunkptr = residualBuffer(residual_chunk_size);
 		ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
@@ -711,8 +794,14 @@ void CudaRasterizer::Rasterizer::backward(
 	uint32_t* p_sum, 
 	float* cov3D,
 	bool antialiasing,
+	const int num_views,
+	const int view_index,
 	bool debug)
 {
+	printf("num duplicate gaussians: %d\n", R);
+	printf("num gaussians: %d\n", P);
+	printf("num residuals: %d \n", K);
+	printf("num views: %d\n", num_views);
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
@@ -775,7 +864,9 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dcolor,
 		dL_dinvdepth,
 		dr_dxs, 
-		residual_index), debug)
+		residual_index,
+		num_views,
+		view_index), debug)
 
 	// float test;
 	// int test_index;

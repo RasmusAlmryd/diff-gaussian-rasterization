@@ -91,6 +91,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.campos,
             raster_settings.prefiltered,
             raster_settings.antialiasing,
+            raster_settings.num_views,
+            raster_settings.view_index,
             raster_settings.debug
         )
 
@@ -160,6 +162,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 sampleBuffer,
                 residualBuffer,
 		        raster_settings.antialiasing,
+                raster_settings.num_views,
+                raster_settings.view_index,
                 raster_settings.debug)
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -198,7 +202,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         sparse_J.num_gaussians = means3D.shape[0]
         sparse_J.num_residuals = raster_settings.image_width * raster_settings.image_height
         sparse_J.num_entries = num_residuals
-        sparse_J.raster_settings = raster_settings
+        sparse_J.raster_settings.append(raster_settings)
         sparse_J.clamped = clamped
         sparse_J.cov3D = cov3D
         # sparse_J.radii = radii
@@ -219,6 +223,8 @@ class GaussianRasterizationSettings(NamedTuple):
     prefiltered : bool
     debug : bool
     antialiasing : bool
+    num_views: int
+    view_index: int
 
 @dataclass
 class SparseJacobianData:
@@ -228,7 +234,7 @@ class SparseJacobianData:
     num_gaussians: int
     num_residuals: int
     num_entries: int
-    raster_settings: GaussianRasterizationSettings
+    raster_settings: list[GaussianRasterizationSettings]
     clamped: torch.Tensor
     cov3D: torch.Tensor
 
@@ -460,7 +466,30 @@ class GaussNewton(Optimizer):
         # print(visibility)
         # if(not visibility.any()):
         #     print('no gaussian visible')
+
+        
         #     return
+
+        setting = _C.Raster_settings(
+            sparse_jacobian.raster_settings[0].image_height,
+            sparse_jacobian.raster_settings[0].image_width ,
+            sparse_jacobian.raster_settings[0].tanfovx ,
+            sparse_jacobian.raster_settings[0].tanfovy ,
+            sparse_jacobian.raster_settings[0].bg,
+            sparse_jacobian.raster_settings[0].scale_modifier ,
+            sparse_jacobian.raster_settings[0].viewmatrix ,
+            sparse_jacobian.raster_settings[0].projmatrix,
+            sparse_jacobian.raster_settings[0].sh_degree ,
+            sparse_jacobian.raster_settings[0].campos ,
+            sparse_jacobian.raster_settings[0].prefiltered ,
+            sparse_jacobian.raster_settings[0].debug ,
+            sparse_jacobian.raster_settings[0].antialiasing ,
+            sparse_jacobian.raster_settings[0].num_views,
+            sparse_jacobian.raster_settings[0].view_index,
+            )
+
+        settings = [setting]
+
 
 
         max_coeffs= 0
@@ -468,12 +497,11 @@ class GaussNewton(Optimizer):
             max_coeffs = f_rest.size(1)
 
         P = means3D.size(0)
-        D = sparse_jacobian.raster_settings.sh_degree
-        width = sparse_jacobian.raster_settings.image_width
-        height = sparse_jacobian.raster_settings.image_height
+        D = sparse_jacobian.raster_settings[0].sh_degree
+        width = sparse_jacobian.raster_settings[0].image_width
+        height = sparse_jacobian.raster_settings[0].image_height
 
-        # print(sparse_jacobian.values)
-        # print(P, D, max_coeffs)
+        print(sparse_jacobian.values.isnan().any())
         
 
         _C.gaussNewtonUpdate(
@@ -486,14 +514,15 @@ class GaussNewton(Optimizer):
             opacities,
             scales, 
             rotations,
-            sparse_jacobian.raster_settings.scale_modifier,
+            sparse_jacobian.raster_settings[0].scale_modifier,
             sparse_jacobian.cov3D,
-            sparse_jacobian.raster_settings.viewmatrix,
-            sparse_jacobian.raster_settings.projmatrix,
-            sparse_jacobian.raster_settings.tanfovx, 
-            sparse_jacobian.raster_settings.tanfovy,
-            sparse_jacobian.raster_settings.campos, 
-            sparse_jacobian.raster_settings.antialiasing,
+            sparse_jacobian.raster_settings[0].viewmatrix,
+            sparse_jacobian.raster_settings[0].projmatrix,
+            sparse_jacobian.raster_settings[0].tanfovx, 
+            sparse_jacobian.raster_settings[0].tanfovy,
+            sparse_jacobian.raster_settings[0].campos, 
+            sparse_jacobian.raster_settings[0].antialiasing,
+            settings,
 
             delta, 
             sparse_jacobian.values, 
@@ -506,6 +535,9 @@ class GaussNewton(Optimizer):
             N, 
             M, 
             sparse_jacobian.num_entries)
+        
+        # raise Exception("Work in progress")
+
 
         # raise Exception('testing')
         # num_params_per_gaussian = 59
@@ -557,7 +589,7 @@ class GaussNewton(Optimizer):
 
         # raise Exception("Work in progress")
 
-        
+        print('residuals has nan values: ', loss_residuals.isnan().any())
 
         # offset = 0
         # with torch.no_grad():
@@ -589,19 +621,22 @@ class GaussNewton(Optimizer):
             del sparse_jacobian.values 
             del sparse_jacobian.indices
             del sparse_jacobian.p_sum 
+            # raise Exception('stooooop')
             return
+        
+        max_scale_exp = 2
 
 
         def error(delta, alpha):
             with torch.no_grad():
                 offset = 0
-                new_means3D = torch.clone(means3D)
-                new_scales = torch.clone(scales)
-                new_rotations = torch.clone(rotations)
-                new_opacities = torch.clone(opacities)
-                new_f_dc = torch.clone(f_dc)
-                new_f_rest = torch.clone(f_rest)
-                print('mean before: ', new_means3D)
+                new_means3D = torch.clone(means3D_group['params'][0])
+                new_scales = torch.clone(scales_group['params'][0])
+                new_rotations = torch.clone(rotations_group['params'][0])
+                new_opacities = torch.clone(opacities_group['params'][0])
+                new_f_dc = torch.clone(f_dc_group['params'][0])
+                new_f_rest = torch.clone(f_rest_group['params'][0])
+                # print('mean before: ', new_means3D)
                 new_params = [new_means3D,new_scales,new_rotations,new_opacities,new_f_dc,new_f_rest]
 
                 for idx, param in enumerate([means3D,scales,rotations,opacities,f_dc,f_rest]):
@@ -609,9 +644,14 @@ class GaussNewton(Optimizer):
                     new_params[idx] += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
                     offset += numel
 
-                print('mean after: ', new_means3D)
+                # print('mean after: ', new_means3D)
+
+                # new_scales = torch.exp(torch.clamp(new_scales, None, max_scale_exp))
+
+                new_rotations = torch.nn.functional.normalize(new_rotations)
+                new_opacities = torch.sigmoid(new_opacities)
                 
-                color, _, _ = rasterize_gaussians(new_means3D, None, new_f_dc, new_f_rest, torch.Tensor([]), new_opacities,new_scales, new_rotations, torch.Tensor([]), sparse_jacobian.raster_settings, None)
+                color, _, _ = rasterize_gaussians(new_means3D, None, new_f_dc, new_f_rest, torch.Tensor([]), new_opacities,new_scales, new_rotations, torch.Tensor([]), sparse_jacobian.raster_settings[0], None)
 
                 loss = (gt_image - color) ** 2
                 loss = loss.sum()
@@ -625,16 +665,20 @@ class GaussNewton(Optimizer):
             mu = error(delta, alpha)
             print('alpha: ', alpha)
             print('error: ', mu)
+            # break
             if mu > mu_prev:
                 alpha = alpha/gamma
                 break
             alpha *= gamma
             mu_prev = mu
+            
         
         # return
     
         # alpha = 1
         print('final alpha: ', alpha)
+
+        sparse_jacobian.raster_settings.clear()
 
         offset = 0
         with torch.no_grad():
@@ -658,16 +702,17 @@ class GaussNewton(Optimizer):
                 # if group['name'] != 'xyz':
                 # param.data += delta[offset:offset + numel].view(-1, P).T.view(param.shape)
                 param.data += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
-                # if(group['name'] == 'f_dc'):
-                #     param.data *= 0
-                #     param.data += torch.ones(param.shape).cuda() * 1.77
+
+                # if(group['name'] == 'scaling'):
+                #     param.data = torch.clamp(param.data, None, max_scale_exp)
                 
-                #     param.data *= 0
-                #     param.data += torch.ones(param.shape).cuda() * 1.1
+
                 print('AFTER')
                 print(param)
 
                 offset += numel
+
+        
                 
         # raise Exception("Work in progress")
         

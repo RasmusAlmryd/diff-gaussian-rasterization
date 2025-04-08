@@ -52,6 +52,8 @@ namespace CudaRasterizer
 			const float* cam_pos,
 			const float tan_fovx, float tan_fovy,
 			const bool prefiltered,
+			const int num_views,
+			const int view_index,
 			float* out_color,
 			float* depth,
 			bool antialiasing,
@@ -100,6 +102,8 @@ namespace CudaRasterizer
 			uint32_t* p_sum,
 			float* cov3D,
 			bool antialiasing,
+			const int num_views,
+			const int view_index,
 			bool debug);
 	};
 };

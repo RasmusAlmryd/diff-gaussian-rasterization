@@ -38,6 +38,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool antialiasing,
+	const int num_views,
+	const int view_index,
 	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
@@ -70,6 +72,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& sampleBuffer,
 	const torch::Tensor& residualBuffer,
 	const bool antialiasing,
+	const int num_views,
+	const int view_index,
 	const bool debug);
 		
 torch::Tensor markVisible(
@@ -91,6 +95,149 @@ void adamUpdate(
 	const uint32_t M
 );
 
+// typedef struct{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+// } Raster_settings;
+
+// typedef struct{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+
+// 	Raster_settings(
+// 		int image_height,
+// 		int image_width,
+// 		float tanfovx ,
+// 		float tanfovy ,
+// 		const torch::Tensor &bg ,
+// 		float scale_modifier ,
+// 		const torch::Tensor &viewmatrix ,
+// 		const torch::Tensor &projmatrix ,
+// 		int sh_degree ,
+// 		const torch::Tensor &campos,
+// 		bool prefiltered ,
+// 		bool debug ,
+// 		bool antialiasing ,
+// 		int num_views,
+// 		int view_index,
+// 	): image_height(image_height),image_width(image_width),tanfovx(tanfovx),tanfovy(tanfovy),bg(bg),scale_modifier(scale_modifier),viewmatrix(viewmatrix),projmatrix(projmatrix),sh_degree(sh_degree),campos(campos),prefiltered(prefiltered),debug(debug),antialiasing(antialiasing),num_views(num_views),view_index(view_index){}
+// } Raster_settings;
+
+// struct Raster_settings{
+// 	int image_height;
+// 	int image_width;
+// 	float tanfovx ;
+// 	float tanfovy ;
+// 	const torch::Tensor &bg ;
+// 	float scale_modifier ;
+// 	const torch::Tensor &viewmatrix ;
+// 	const torch::Tensor &projmatrix ;
+// 	int sh_degree ;
+// 	const torch::Tensor &campos;
+// 	bool prefiltered ;
+// 	bool debug ;
+// 	bool antialiasing ;
+// 	int num_views;
+// 	int view_index;
+
+// 	Raster_settings(
+// 		int image_height,
+// 		int image_width,
+// 		float tanfovx ,
+// 		float tanfovy ,
+// 		const torch::Tensor &bg ,
+// 		float scale_modifier ,
+// 		const torch::Tensor &viewmatrix ,
+// 		const torch::Tensor &projmatrix ,
+// 		int sh_degree ,
+// 		const torch::Tensor &campos,
+// 		bool prefiltered ,
+// 		bool debug ,
+// 		bool antialiasing ,
+// 		int num_views,
+// 		int view_index,
+// 	): image_height(image_height),image_width(image_width),tanfovx(tanfovx),tanfovy(tanfovy),bg(bg),scale_modifier(scale_modifier),viewmatrix(viewmatrix),projmatrix(projmatrix),sh_degree(sh_degree),campos(campos),prefiltered(prefiltered),debug(debug),antialiasing(antialiasing),num_views(num_views),view_index(view_index){}
+// };
+
+struct Raster_settings {
+    int image_height;
+    int image_width;
+    float tanfovx;
+    float tanfovy;
+    torch::Tensor bg;
+    float scale_modifier;
+    torch::Tensor viewmatrix;
+    torch::Tensor projmatrix;
+    int sh_degree;
+    torch::Tensor campos;
+    bool prefiltered;
+    bool debug;
+    bool antialiasing;
+    int num_views;
+    int view_index;
+
+    Raster_settings(
+        int image_height,
+        int image_width,
+        float tanfovx,
+        float tanfovy,
+        torch::Tensor bg,
+        float scale_modifier,
+        torch::Tensor viewmatrix,
+        torch::Tensor projmatrix,
+        int sh_degree,
+        torch::Tensor campos,
+        bool prefiltered,
+        bool debug,
+        bool antialiasing,
+        int num_views,
+        int view_index
+    )
+    : image_height(image_height),
+      image_width(image_width),
+      tanfovx(tanfovx),
+      tanfovy(tanfovy),
+      bg(std::move(bg)),
+      scale_modifier(scale_modifier),
+      viewmatrix(std::move(viewmatrix)),
+      projmatrix(std::move(projmatrix)),
+      sh_degree(sh_degree),
+      campos(std::move(campos)),
+      prefiltered(prefiltered),
+      debug(debug),
+      antialiasing(antialiasing),
+      num_views(num_views),
+      view_index(view_index)
+    {}
+};
+
+
 void gaussNewtonUpdate(
 
 	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
@@ -109,6 +256,7 @@ void gaussNewtonUpdate(
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
+	const std::vector<Raster_settings> &settings,
 
     
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
@@ -123,6 +271,8 @@ void gaussNewtonUpdate(
     const uint32_t M,  // number of residuals
     const uint32_t sparse_J_entries
 );
+
+
 
 
 void gaussNewtonUpdateSimple(

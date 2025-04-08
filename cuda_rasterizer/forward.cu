@@ -250,6 +250,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
+	// if(my_radius == 0)
+	// 	return;
+	// printf("idx[%d], pos in image: x: %g, y: %g, touched: %d, r: %f , l1: %f, l2: %f, mid: %f, det_cov: %f \n",idx, point_image.x,point_image.y, (int)((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y)), my_radius, lambda1, lambda2, mid, det_cov);
+	
 	// If colors have been precomputed, use them, otherwise convert
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)

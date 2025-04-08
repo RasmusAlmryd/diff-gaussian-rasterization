@@ -42,6 +42,25 @@ namespace GaussNewton {
         const uint32_t sparse_J_entries
     );
 
+
+    struct raster_settings{
+        int image_height;
+        int image_width;
+        float tanfovx ;
+        float tanfovy ;
+        float* bg ;
+        float scale_modifier ;
+        float* viewmatrix ;
+        float* projmatrix ;
+        int sh_degree ;
+        float* campos;
+        bool prefiltered ;
+        bool debug ;
+        bool antialiasing ;
+        int num_views;
+        int view_index;
+    };
+
     
 }
 
