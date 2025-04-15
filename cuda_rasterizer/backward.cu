@@ -640,6 +640,7 @@ PerGaussianRenderCUDA(
 				Register_dL_dcolors[ch] += weight * dL_dchannel;
 
 				dr_dcolor[ch] = weight * dr_dch;
+				// dr_dcolor[ch] = 1; // Testing
 				// dL_dcolortemp[ch] = weight * dL_dchannel;
 				dL_dalpha += ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel;
 				// dL_dalpha_channel[ch] = ((c[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dL_dchannel; // maybe
@@ -681,21 +682,36 @@ PerGaussianRenderCUDA(
 
 			// maybe store: dL_dalpha[channel], d.x, d.y, G, (dL_invdepth, weight)
 
-			int index= gaussian_idx + pix_id * P ;
-			// int index= (gaussian_idx + pix_id * P ) + view_idx * num_images * P;
-			atomicAdd(&dr_dxs[index*13 + 0], d.x);
-			atomicAdd(&dr_dxs[index*13 + 1], d.y);
-			atomicAdd(&dr_dxs[index*13 + 2], G);
-			atomicAdd(&dr_dxs[index*13 + 3], weight * dL_invdepth);
+			// int index= gaussian_idx + pix_id * P ;
+			int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
+			// atomicAdd(&dr_dxs[index*13 + 0], d.x);
+			// atomicAdd(&dr_dxs[index*13 + 1], d.y);
+			// atomicAdd(&dr_dxs[index*13 + 2], G);
+			// atomicAdd(&dr_dxs[index*13 + 3], weight * dL_invdepth);
+			// for (int ch = 0; ch < C; ++ch) {
+			// 	atomicAdd(&dr_dxs[index*13 + ch + 4], dr_dcolor[ch]);
+			// }
+			// for (int ch = 0; ch < C; ++ch) {
+			// 	atomicAdd(&dr_dxs[index*13 + ch + 7], dr_dalpha_channel[ch]);
+			// }
+			// atomicAdd(&dr_dxs[index*13 + 10], con_o.w);
+			// atomicAdd(&dr_dxs[index*13 + 11], dG_ddelx);
+			// atomicAdd(&dr_dxs[index*13 + 12], dG_ddely);
+
+			dr_dxs[index * 13 + 0] =  d.x;
+			dr_dxs[index * 13 + 1] =  d.y;
+			dr_dxs[index * 13 + 2] =  G;
+			dr_dxs[index * 13 + 3] = weight * dL_invdepth;
+			// dr_dxs[index*13 + 3] = weight; 
 			for (int ch = 0; ch < C; ++ch) {
-				atomicAdd(&dr_dxs[index*13 + ch + 4], dr_dcolor[ch]);
+				dr_dxs[index*13 + ch + 4] =  dr_dcolor[ch];
 			}
 			for (int ch = 0; ch < C; ++ch) {
-				atomicAdd(&dr_dxs[index*13 + ch + 7], dr_dalpha_channel[ch]);
+				dr_dxs[index*13 + ch + 7] = dr_dalpha_channel[ch];
 			}
-			atomicAdd(&dr_dxs[index*13 + 10], con_o.w);
-			atomicAdd(&dr_dxs[index*13 + 11], dG_ddelx);
-			atomicAdd(&dr_dxs[index*13 + 12], dG_ddely);
+			dr_dxs[index*13 + 10] =  con_o.w;
+			dr_dxs[index*13 + 11] =  dG_ddelx;
+			dr_dxs[index*13 + 12] =  dG_ddely;
 
 
 

@@ -256,7 +256,8 @@ void gaussNewtonUpdate(
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
-	const std::vector<Raster_settings> &settings,
+	const int num_views,
+	// const std::vector<Raster_settings> &settings,
 
     
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.

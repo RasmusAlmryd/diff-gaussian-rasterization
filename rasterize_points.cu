@@ -329,7 +329,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options()); // quats {P, 3, 3}
 
-  int num_images = 1;
+  int num_images = num_views;
 
   torch::Tensor dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options()); //accessed in right order?
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
@@ -452,7 +452,8 @@ void gaussNewtonUpdate(
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
-	const std::vector<Raster_settings> &settings,
+	const int num_views,
+	// const std::vector<Raster_settings> &settings,
 
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
     torch::Tensor &sparse_J_values,
@@ -470,6 +471,27 @@ void gaussNewtonUpdate(
 	// for(Raster_settings r: settings){
 	// 	printf("width: %d, height: %d\n", r.image_width, r.image_height);
 	// }
+
+	// std::vector<GaussNewton::raster_settings> GN_settings;
+    // for(Raster_settings r: settings){
+    //     GaussNewton::raster_settings s;
+    //     s.image_height = r.image_height;
+    //     s.image_width = r.image_width;
+    //     s.tanfovx = r.tanfovx;
+    //     s.tanfovy = r.tanfovy;
+    //     s.bg = r.bg.contiguous().data<float>();
+    //     s.scale_modifier = r.scale_modifier;
+    //     s.viewmatrix = r.viewmatrix.contiguous().data<float>();
+    //     s.projmatrix = r.projmatrix.contiguous().data<float>();
+    //     s.sh_degree = r.sh_degree;
+    //     s.campos = r.campos.contiguous().data<float>();
+    //     s.prefiltered = r.prefiltered;
+    //     s.debug = r.debug;
+    //     s.antialiasing = r.antialiasing;
+    //     s.num_views = r.num_views;
+    //     s.view_index = r.view_index;
+    //     GN_settings.push_back(s);
+    // }
 
 	// return;
 	GaussNewton::gaussNewtonUpdate(
@@ -489,6 +511,9 @@ void gaussNewtonUpdate(
 		tan_fovx, tan_fovy,
 		campos.contiguous().data<float>(),
 		antialiasing,
+		// GN_settings.data(),
+		// GN_settings.size(),
+		num_views,
 
 		x.contiguous().data<float>(), 
 		sparse_J_values.contiguous().data<float>(),

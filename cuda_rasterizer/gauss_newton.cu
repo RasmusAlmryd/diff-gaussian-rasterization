@@ -609,6 +609,13 @@ __device__ void preprocessCUDA_device(
 		computeCov3D_device(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 }
 
+
+// template<int C>
+// __device__ void getGradients(){
+
+// }
+
+
 template<uint32_t C>
 __global__
 void test_delta_residuals(
@@ -681,32 +688,33 @@ void test_delta_residuals(
 
     // }
 
-    // atomicAdd(&b[x * num_params_per_gauss + 0], d.x);
-    // atomicAdd(&b[x * num_params_per_gauss + 1], d.y);
-    // atomicAdd(&b[x * num_params_per_gauss + 2], G);
-    // atomicAdd(&b[x * num_params_per_gauss + 3], dr_dinvdepths);
-    // atomicAdd(&b[x * num_params_per_gauss + 4], dr_dcolors[0]);
-    // atomicAdd(&b[x * num_params_per_gauss + 5], dr_dcolors[1]);
-    // atomicAdd(&b[x * num_params_per_gauss + 6], dr_dcolors[2]);
-    // atomicAdd(&b[x * num_params_per_gauss + 7], dr_dalpha_channel[0]);
-    // atomicAdd(&b[x * num_params_per_gauss + 8], dr_dalpha_channel[1]);
-    // atomicAdd(&b[x * num_params_per_gauss + 9], dr_dalpha_channel[2]);
-    // atomicAdd(&b[x * num_params_per_gauss + 10], conic_w);
-    // atomicAdd(&b[x * num_params_per_gauss + 11], dG_ddelx);
-    // atomicAdd(&b[x * num_params_per_gauss + 12], dG_ddely);
+    atomicAdd(&b[14 + x * num_params_per_gauss + 0], 1);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 0], d.x);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 1], d.y);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 2], G);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 3], dr_dinvdepths);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 4], dr_dcolors[0]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 5], dr_dcolors[1]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 6], dr_dcolors[2]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 7], dr_dalpha_channel[0]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 8], dr_dalpha_channel[1]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 9], dr_dalpha_channel[2]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 10], conic_w);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 11], dG_ddelx);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 12], dG_ddely);
 
-    // atomicAdd(&b[x * num_params_per_gauss + 13], ((glm::vec3*)scales)[x].x);
-    // atomicAdd(&b[x * num_params_per_gauss + 14], ((glm::vec3*)scales)[x].y);
-    // atomicAdd(&b[x * num_params_per_gauss + 15], ((glm::vec3*)scales)[x].z);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 13], ((glm::vec3*)scales)[x].x);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 14], ((glm::vec3*)scales)[x].y);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 15], ((glm::vec3*)scales)[x].z);
     
-    // atomicAdd(&b[x * num_params_per_gauss + 16], ((glm::vec4*)rotations)[x].x);
-    // atomicAdd(&b[x * num_params_per_gauss + 17], ((glm::vec4*)rotations)[x].y);
-    // atomicAdd(&b[x * num_params_per_gauss + 18], ((glm::vec4*)rotations)[x].z);
-    // atomicAdd(&b[x * num_params_per_gauss + 19], ((glm::vec4*)rotations)[x].w);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 16], ((glm::vec4*)rotations)[x].x);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 17], ((glm::vec4*)rotations)[x].y);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 18], ((glm::vec4*)rotations)[x].z);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 19], ((glm::vec4*)rotations)[x].w);
 
 
 
-    // return;
+    return;
 
 
     for (int ch = 0; ch < C; ch++) {
@@ -845,11 +853,11 @@ void test_delta_residuals(
         atomicAdd(&b[x * num_params_per_gauss + 12], dr_ddc.y);
         atomicAdd(&b[x * num_params_per_gauss + 13], dr_ddc.z);
     
-        for(int i = 0; i < max_coeffs; i++){
-            atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], dr_dsh[i].x);
-            atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], dr_dsh[i].y);
-            atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], dr_dsh[i].z);
-        }
+        // for(int i = 0; i < max_coeffs; i++){
+        //     atomicAdd(&b[x * num_params_per_gauss + 14 + i * 3 ], dr_dsh[i].x);
+        //     atomicAdd(&b[x * num_params_per_gauss + 15 + i * 3 ], dr_dsh[i].y);
+        //     atomicAdd(&b[x * num_params_per_gauss + 16 + i * 3 ], dr_dsh[i].z);
+        // }
     }
 }
 
@@ -863,6 +871,7 @@ void calc_b_non_sparse(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -884,17 +893,26 @@ void calc_b_non_sparse(
     ){
 
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= P*M) return;
+    if(idx >= P*M*num_views) return;
 
-    int x = idx % P;  // Gaussian index
-    int y = idx / P;  // Pixel index
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
+    // int x = (idx % P) % (P*M);  // Gaussian index
+    // int y = (idx / P) % (P*M);  // Pixel index
+    int x = (idx % (P*M)) % P;  // Gaussian index
+    int y = (idx % (P*M)) / P;  // Pixel index
+    int view_idx = idx / (P*M);  // View index
 
     const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
+    const float* view_matrix = viewmatrix + (16 * view_idx);
+    const float* proj_matrix = projmatrix + (16 * view_idx);
+    const float* cam_pos = campos + (3 * view_idx);
+    const int* view_radii = radii + view_idx;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
+    int index= x + y * P + view_idx * P * M;
     float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
     float G = J[index * 13 + 2];
     float dr_dinvdepths = J[index * 13 + 3];
@@ -916,17 +934,6 @@ void calc_b_non_sparse(
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
-    if(idx == 0){
-        printf("conic_w: %g \n", conic_w);
-        printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-    }
-
-    
-
-    // if(dr_dcolors[0] != 0 || dr_dcolors[1] != 0 || dr_dcolors[2] != 0){
-    //     printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-
-    // }
 
     for (int ch = 0; ch < C; ch++) {
         
@@ -956,10 +963,6 @@ void calc_b_non_sparse(
         dL_dcolortemp.y *= ch == 1 ? 1 : 0;
         dL_dcolortemp.z *= ch == 2 ? 1 : 0;
 
-        // if(dr_dcolors[0] != 0 || dr_dcolors[1] != 0 || dr_dcolors[2] != 0){
-        // if(idx == 455533){
-        //     printf("masked color[%d]: x: %g, y: %g, z: %g \n", idx, dL_dcolortemp.x, dL_dcolortemp.y, dL_dcolortemp.z);
-        // }
 
         float3 dr_dmean = {0.0f, 0.0f, 0.0f}; 
         glm::vec4 dr_drot = glm::vec4(0.0f);
@@ -973,11 +976,11 @@ void calc_b_non_sparse(
         computeCov2DCUDA_device(
             P,
             (float3*)means3D,
-            radii,
+            view_radii,
             cov3Ds,
             focal_x, focal_y,
             tan_fovx, tan_fovy,
-            viewmatrix,
+            view_matrix,
             opacities,
             &dr_dconics[0],
             &dr_dopacity,
@@ -991,15 +994,15 @@ void calc_b_non_sparse(
         preprocessCUDA_device<C>(
             P, D, max_coeffs,
             (float3*)means3D,
-            radii,
+            view_radii,
             dc,
             shs,
             clamped,
             (glm::vec3*)scales,
             (glm::vec4*)rotations,
             scale_modifier,
-            projmatrix,
-            (glm::vec3*)campos,
+            proj_matrix,
+            (glm::vec3*)cam_pos,
             &dr_dmean2D,
             (glm::vec3*)&dr_dmean,
             (float*)&dL_dcolortemp[0],
@@ -1012,7 +1015,7 @@ void calc_b_non_sparse(
             x
         );
     
-        float residual = loss_residuals[y*3 + ch];
+        float residual = loss_residuals[view_idx * C * M + y * C + ch];
     
         glm::vec3 scale = {scales[x*3 + 0], scales[x*3 + 1], scales[x*3 + 2]};
         dr_dscale.x = dr_dscale.x * scale.x;
@@ -1254,6 +1257,7 @@ void residual_dot_sum(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -1272,19 +1276,27 @@ void residual_dot_sum(
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
     bool antialiasing
-){
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= P*M) return;
+    ){
 
-    int x = idx % P;  // Gaussian index
-    int y = idx / P;  // Pixel index
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= P*M*num_views) return;
+
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    int x = (idx % (P*M)) % P;  // Gaussian index
+    int y = (idx % (P*M)) / P;  // Pixel index
+    int view_idx = idx / (P*M);  // View index
 
     const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
+    const float* view_matrix = viewmatrix + (16 * view_idx);
+    const float* proj_matrix = projmatrix + (16 * view_idx);
+    const float* cam_pos = campos + (3 * view_idx);
+    const int* view_radii = radii + view_idx;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
+    int index= x + y * P + view_idx * P * M;
     float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
     float G = J[index * 13 + 2];
     float dr_dinvdepths = J[index * 13 + 3];
@@ -1346,11 +1358,11 @@ void residual_dot_sum(
         computeCov2DCUDA_device(
             P,
             (float3*)means3D,
-            radii,
+            view_radii,
             cov3Ds,
             focal_x, focal_y,
             tan_fovx, tan_fovy,
-            viewmatrix,
+            view_matrix,
             opacities,
             &dr_dconics[0],
             &dr_dopacity,
@@ -1364,15 +1376,15 @@ void residual_dot_sum(
         preprocessCUDA_device<C>(
             P, D, max_coeffs,
             (float3*)means3D,
-            radii,
+            view_radii,
             dc,
             shs,
             clamped,
             (glm::vec3*)scales,
             (glm::vec4*)rotations,
             scale_modifier,
-            projmatrix,
-            (glm::vec3*)campos,
+            proj_matrix,
+            (glm::vec3*)cam_pos,
             &dr_dmean2D,
             (glm::vec3*)&dr_dmean,
             (float*)&dL_dcolortemp[0],
@@ -1404,29 +1416,29 @@ void residual_dot_sum(
     
 
 
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.x * v[x * num_params_per_gauss + 0]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.y * v[x * num_params_per_gauss + 1]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dmean.z * v[x * num_params_per_gauss + 2]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dmean.x * v[x * num_params_per_gauss + 0]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dmean.y * v[x * num_params_per_gauss + 1]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dmean.z * v[x * num_params_per_gauss + 2]);
 
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.x * v[x * num_params_per_gauss + 3]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.y * v[x * num_params_per_gauss + 4]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dscale.z * v[x * num_params_per_gauss + 5]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dscale.x * v[x * num_params_per_gauss + 3]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dscale.y * v[x * num_params_per_gauss + 4]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dscale.z * v[x * num_params_per_gauss + 5]);
 
-        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.x * v[x * num_params_per_gauss + 6]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.y * v[x * num_params_per_gauss + 7]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.z * v[x * num_params_per_gauss + 8]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_drot.w * v[x * num_params_per_gauss + 9]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_drot.x * v[x * num_params_per_gauss + 6]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_drot.y * v[x * num_params_per_gauss + 7]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_drot.z * v[x * num_params_per_gauss + 8]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_drot.w * v[x * num_params_per_gauss + 9]);
 
-        atomicAdd(&residual_dot_v[y * C + ch], dr_dopacity * v[x * num_params_per_gauss + 10]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dopacity * v[x * num_params_per_gauss + 10]);
 
-        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.x * v[x * num_params_per_gauss + 11]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.y * v[x * num_params_per_gauss + 12]);
-        atomicAdd(&residual_dot_v[y * C + ch], dr_ddc.z * v[x * num_params_per_gauss + 13]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_ddc.x * v[x * num_params_per_gauss + 11]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_ddc.y * v[x * num_params_per_gauss + 12]);
+        atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_ddc.z * v[x * num_params_per_gauss + 13]);
 
         for(int i = 0; i < max_coeffs; i++){
-            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
-            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
-            atomicAdd(&residual_dot_v[y * C + ch], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
+            atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dsh[i].x * v[x * num_params_per_gauss + 14 + i * 3]);
+            atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dsh[i].y * v[x * num_params_per_gauss + 15 + i * 3]);
+            atomicAdd(&residual_dot_v[view_idx * C * M + y * C + ch], dr_dsh[i].z * v[x * num_params_per_gauss + 16 + i * 3]);
         }
     }
 
@@ -1594,6 +1606,7 @@ void sum_residuals(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -1612,19 +1625,27 @@ void sum_residuals(
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
     bool antialiasing
-){
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= P*M) return;
+    ){
 
-    int x = idx % P;  // Gaussian index
-    int y = idx / P;  // Pixel index
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= P*M*num_views) return;
+
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    int x = (idx % (P*M)) % P;  // Gaussian index
+    int y = (idx % (P*M)) / P;  // Pixel index
+    int view_idx = idx / (P*M);  // View index
 
     const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
+    const float* view_matrix = viewmatrix + (16 * view_idx);
+    const float* proj_matrix = projmatrix + (16 * view_idx);
+    const float* cam_pos = campos + (3 * view_idx);
+    const int* view_radii = radii + view_idx;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
+    int index= x + y * P + view_idx * P * M;
     float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
     float G = J[index * 13 + 2];
     float dr_dinvdepths = J[index * 13 + 3];
@@ -1686,11 +1707,11 @@ void sum_residuals(
         computeCov2DCUDA_device(
             P,
             (float3*)means3D,
-            radii,
+            view_radii,
             cov3Ds,
             focal_x, focal_y,
             tan_fovx, tan_fovy,
-            viewmatrix,
+            view_matrix,
             opacities,
             &dr_dconics[0],
             &dr_dopacity,
@@ -1704,15 +1725,15 @@ void sum_residuals(
         preprocessCUDA_device<C>(
             P, D, max_coeffs,
             (float3*)means3D,
-            radii,
+            view_radii,
             dc,
             shs,
             clamped,
             (glm::vec3*)scales,
             (glm::vec4*)rotations,
             scale_modifier,
-            projmatrix,
-            (glm::vec3*)campos,
+            proj_matrix,
+            (glm::vec3*)cam_pos,
             &dr_dmean2D,
             (glm::vec3*)&dr_dmean,
             (float*)&dL_dcolortemp[0],
@@ -1743,29 +1764,29 @@ void sum_residuals(
         dr_drot.w = dr_drot_un.w;
 
 
-        atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 2], dr_dmean.z * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 0], dr_dmean.x * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 1], dr_dmean.y * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 2], dr_dmean.z * residual_dot_v[view_idx * C * M + y * C + ch]);
 
-        atomicAdd(&Av[x * num_params_per_gauss + 3], dr_dscale.x * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 4], dr_dscale.y * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 5], dr_dscale.z * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 3], dr_dscale.x * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 4], dr_dscale.y * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 5], dr_dscale.z * residual_dot_v[view_idx * C * M + y * C + ch]);
 
-        atomicAdd(&Av[x * num_params_per_gauss + 6], dr_drot.x * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 7], dr_drot.y * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 8], dr_drot.z * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 9], dr_drot.w * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 6], dr_drot.x * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 7], dr_drot.y * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 8], dr_drot.z * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 9], dr_drot.w * residual_dot_v[view_idx * C * M + y * C + ch]);
 
-        atomicAdd(&Av[x * num_params_per_gauss + 10], dr_dopacity * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 10], dr_dopacity * residual_dot_v[view_idx * C * M + y * C + ch]);
 
-        atomicAdd(&Av[x * num_params_per_gauss + 11], dr_ddc.x * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 12], dr_ddc.y * residual_dot_v[y * C + ch]);
-        atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 11], dr_ddc.x * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 12], dr_ddc.y * residual_dot_v[view_idx * C * M + y * C + ch]);
+        atomicAdd(&Av[x * num_params_per_gauss + 13], dr_ddc.z * residual_dot_v[view_idx * C * M + y * C + ch]);
 
         for(int i = 0; i < max_coeffs; i++){
-            atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[y * C + ch]);
-            atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[y * C + ch]);
-            atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[y * C + ch]);
+            atomicAdd(&Av[x * num_params_per_gauss + 14 + i * 3], dr_dsh[i].x * residual_dot_v[view_idx * C * M + y * C + ch]);
+            atomicAdd(&Av[x * num_params_per_gauss + 15 + i * 3], dr_dsh[i].y * residual_dot_v[view_idx * C * M + y * C + ch]);
+            atomicAdd(&Av[x * num_params_per_gauss + 16 + i * 3], dr_dsh[i].z * residual_dot_v[view_idx * C * M + y * C + ch]);
         }
     }
     
@@ -1930,6 +1951,7 @@ void Av(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -1950,10 +1972,10 @@ void Av(
     bool antialiasing
 ){
     float* residual_dot_v;
-    cudaMalloc(&residual_dot_v, M * NUM_CHANNELS_3DGS * sizeof(float));
-    cudaMemset(residual_dot_v, 0, M * NUM_CHANNELS_3DGS * sizeof(float));
+    cudaMalloc(&residual_dot_v, num_views * M * NUM_CHANNELS_3DGS * sizeof(float));
+    cudaMemset(residual_dot_v, 0, num_views * M * NUM_CHANNELS_3DGS * sizeof(float));
     
-    residual_dot_sum<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
+    residual_dot_sum<NUM_CHANNELS_3DGS><<<((P*M*num_views)+255)/256, 256>>>(
         J, 
         v, 
         residual_dot_v, 
@@ -1961,6 +1983,7 @@ void Av(
         M,
         P, 
         D, 
+        num_views,
         max_coeffs, 
         means3D, 
         radii, 
@@ -1985,14 +2008,15 @@ void Av(
     );    // (r(i)^T * p)
 
 
-    sum_residuals<NUM_CHANNELS_3DGS><<<((P*M)+255)/256, 256>>>(
+    sum_residuals<NUM_CHANNELS_3DGS><<<((P*M*num_views)+255)/256, 256>>>(
         Av, 
         residual_dot_v, 
         J, 
         N, 
         M,
         P, 
-        D, 
+        D,
+        num_views,
         max_coeffs, 
         means3D, 
         radii, 
@@ -2027,6 +2051,7 @@ void diagJTJ(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -2045,19 +2070,27 @@ void diagJTJ(
     const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
     bool antialiasing
-){
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= P*M) return;
+    ){
 
-    int x = idx % P;  // Gaussian index
-    int y = idx / P;  // Pixel index
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= P*M*num_views) return;
+
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    int x = (idx % (P*M)) % P;  // Gaussian index
+    int y = (idx % (P*M)) / P;  // Pixel index
+    int view_idx = idx / (P*M);  // View index
 
     const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
+    const float* view_matrix = viewmatrix + (16 * view_idx);
+    const float* proj_matrix = projmatrix + (16 * view_idx);
+    const float* cam_pos = campos + (3 * view_idx);
+    const int* view_radii = radii + view_idx;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
+    int index= x + y * P + view_idx * P * M;
     float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
     float G = J[index * 13 + 2];
     float dr_dinvdepths = J[index * 13 + 3];
@@ -2119,11 +2152,11 @@ void diagJTJ(
         computeCov2DCUDA_device(
             P,
             (float3*)means3D,
-            radii,
+            view_radii,
             cov3Ds,
             focal_x, focal_y,
             tan_fovx, tan_fovy,
-            viewmatrix,
+            view_matrix,
             opacities,
             &dr_dconics[0],
             &dr_dopacity,
@@ -2137,15 +2170,15 @@ void diagJTJ(
         preprocessCUDA_device<C>(
             P, D, max_coeffs,
             (float3*)means3D,
-            radii,
+            view_radii,
             dc,
             shs,
             clamped,
             (glm::vec3*)scales,
             (glm::vec4*)rotations,
             scale_modifier,
-            projmatrix,
-            (glm::vec3*)campos,
+            proj_matrix,
+            (glm::vec3*)cam_pos,
             &dr_dmean2D,
             (glm::vec3*)&dr_dmean,
             (float*)&dL_dcolortemp[0],
@@ -2384,8 +2417,9 @@ void GaussNewton::gaussNewtonUpdate(
 	const float tan_fovx, float tan_fovy,
     const float* campos, //const glm::vec3* campos,
     bool antialiasing,
-
-    
+    // const raster_settings* settings,
+	// const size_t num_views,
+    const int num_views,
 
     float* x,   // Is named delta in init.py : Check argument position.
     float* sparse_J_values,
@@ -2418,7 +2452,28 @@ void GaussNewton::gaussNewtonUpdate(
     printf("tot num params: %d \n", N);
     printf("tot num gaussians: %d \n", P);
     printf("tot num residuals: %d \n", M);
+    printf("tot num views: %d \n", num_views);
+
     printf("D: %d \n", D);
+
+    for(int i = 0; i < num_views; i++){
+        for(int j = 0; j < 4*4; j++){
+            cudaMemcpy(&h_float, &viewmatrix[i * (4*4) + j], sizeof(float), cudaMemcpyDeviceToHost);
+            printf("%f, ",h_float);
+            if((j+1) % 4 == 0)
+                printf("\n");
+        }
+    }
+    // printf("%f, \");
+    // for(int i = 0; i < num_views; i++){
+    //     for(int j = 0; j < 4*4; j++){
+    //         cudaMemcpy(&h_float, &settings[i].projmatrix[j], sizeof(float), cudaMemcpyDeviceToHost);
+    //         printf("%f, ",h_float);
+    //         if((j+1) % 4 == 0)
+    //             printf("\n");
+    //     }
+    // }
+    // return;
     
     
     float* b;
@@ -2465,13 +2520,13 @@ void GaussNewton::gaussNewtonUpdate(
 
     // for(int i = 0; i < N; i++){
     //     cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("b/residual delta(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    //     printf("b/residual delta(%d): %f  | %s \n",i, h_float, get_param_name(i%59));
     // }
 
     // return;
 
 
-    calc_b_non_sparse<NUM_CHANNELS_3DGS><<<(P*M+255)/256, 256>>>(
+    calc_b_non_sparse<NUM_CHANNELS_3DGS><<<(P*M*num_views+255)/256, 256>>>(
         b,
         J, 
         loss_residuals, 
@@ -2479,6 +2534,7 @@ void GaussNewton::gaussNewtonUpdate(
         M, 
         P, 
         D, 
+        num_views,
         max_coeffs, 
         means3D, 
         radii, 
@@ -2535,6 +2591,7 @@ void GaussNewton::gaussNewtonUpdate(
         M,
         P, 
         D, 
+        num_views,
         max_coeffs, 
         means3D, 
         radii, 
@@ -2585,6 +2642,7 @@ void GaussNewton::gaussNewtonUpdate(
         M,
         P, 
         D, 
+        num_views,
         max_coeffs, 
         means3D, 
         radii, 
@@ -2671,7 +2729,8 @@ void GaussNewton::gaussNewtonUpdate(
             N, 
             M,
             P, 
-            D, 
+            D,
+            num_views,
             max_coeffs, 
             means3D, 
             radii, 

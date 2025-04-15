@@ -223,9 +223,11 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	// 	printf("not valid tile");
 	// }
 
-	if (idx == 0 )
-		// if(valid_tile)
-		ranges[currtile].x = 0;
+	if (idx == 0 ){
+		if(valid_tile){
+			ranges[currtile].x = 0;
+		}
+	}
 	else
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
@@ -546,7 +548,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	allEqual<<<(P + 255) / 256, 256>>>(P, 0, radii, all_zero);
 	cudaMemcpy(&any_visible, all_zero, sizeof(bool), cudaMemcpyDeviceToHost);
 	any_visible = !any_visible;
-	printf("any_visible: %d\n", any_visible);
+	// printf("any_visible: %d\n", any_visible);
 	// if(!any_visible){
 	// 	// return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 	// 	return std::make_tuple(0, 0, 0);
@@ -557,11 +559,11 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
 
-	for(int i = 0; i < P; i++){
-		int temp;
-		CHECK_CUDA(cudaMemcpy(&temp, &radii[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
-		printf("radii[%d]: %d\n", i, temp);
-	}
+	// for(int i = 0; i < P; i++){
+	// 	int temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &radii[i], sizeof(int), cudaMemcpyDeviceToHost), debug);
+	// 	printf("radii[%d]: %d\n", i, temp);
+	// }
 
 	// for(int i = 0; i < P; i++){
 	// 	uint32_t temp;
@@ -583,7 +585,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	int num_rendered;
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	printf("forward: num_rendered: %d\n", num_rendered);
+	// printf("forward: num_rendered: %d\n", num_rendered);
 
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
@@ -616,12 +618,12 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
-	for(int i = 0; i < min(num_rendered, 1); i++){
-		uint64_t temp;
-		CHECK_CUDA(cudaMemcpy(&temp, &binningState.point_list_keys[i], sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
-		uint32_t tile = temp >> 32;
-		printf("key[%d]: full: %llu, tile: %zu \n", i, temp, tile);
-	}
+	// for(int i = 0; i < num_rendered; i++){
+	// 	uint64_t temp;
+	// 	CHECK_CUDA(cudaMemcpy(&temp, &binningState.point_list_keys[i], sizeof(uint64_t), cudaMemcpyDeviceToHost), debug);
+	// 	uint32_t tile = temp >> 32;
+	// 	printf("key[%d]: full: %llu, tile: %zu \n", i, temp, tile);
+	// }
 
 	// Identify start and end of per-tile workloads in sorted list
 	if (num_rendered > 0)
@@ -678,16 +680,16 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	//gaussian_contrib len = num_rendered (duplicate gaussians)
 	int num_residuals = 0;
 	if(num_rendered > 0){
-		CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
+		// CHECK_CUDA(cudaMemset(binningState.gaussian_contrib, 0, num_rendered * sizeof(uint32_t)), debug);
 
-		// printf("num_rendered: %d", num_rendered);
+		// // printf("num_rendered: %d", num_rendered);
 
-		perGaussianContribCount<<<tile_grid, block >>>(
-			imgState.ranges,
-			imgState.n_contrib,
-			width, height,
-			binningState.gaussian_contrib
-		);
+		// perGaussianContribCount<<<tile_grid, block >>>(
+		// 	imgState.ranges,
+		// 	imgState.n_contrib,
+		// 	width, height,
+		// 	binningState.gaussian_contrib
+		// );
 
 		// printf("per gaussian contrib");
 
@@ -705,10 +707,10 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		// printf("n_contrib[70]: %d \n", pix_contrib);
 		
 		// to prefix sum over gaussian_contrib
-		CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
+		// CHECK_CUDA(cub::DeviceScan::InclusiveSum(binningState.gaussian_contrib_scan_space, binningState.gaussian_contrib_scan_size, binningState.gaussian_contrib, binningState.gaussian_contrib, num_rendered), debug)
 		
 		
-		CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+		// CHECK_CUDA(cudaMemcpy(&num_residuals, binningState.gaussian_contrib + num_rendered - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 		// printf("num_residuals: %d \n", num_residuals);
 		// printf("tile_grid: x: %d y: %d \n", tile_grid.x, tile_grid.y);
 		
@@ -737,10 +739,10 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		// printf("num_residuals: %d \n", num_residuals);
 		
 		// throw std::invalid_argument("temp exception.. REMOVE");
-		printf("num residuals: %d", num_residuals);
-		size_t residual_chunk_size = required<ResidualState>(num_residuals);
-		char* residual_chunkptr = residualBuffer(residual_chunk_size);
-		ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
+		// printf("num residuals: %d", num_residuals);
+		// size_t residual_chunk_size = required<ResidualState>(num_residuals);
+		// char* residual_chunkptr = residualBuffer(residual_chunk_size);
+		// ResidualState residualStat = ResidualState::fromChunk(residual_chunkptr, num_residuals);
 	}
 
 	// printf("forward done");
@@ -798,15 +800,15 @@ void CudaRasterizer::Rasterizer::backward(
 	const int view_index,
 	bool debug)
 {
-	printf("num duplicate gaussians: %d\n", R);
-	printf("num gaussians: %d\n", P);
-	printf("num residuals: %d \n", K);
-	printf("num views: %d\n", num_views);
+	// printf("num duplicate gaussians: %d\n", R);
+	// printf("num gaussians: %d\n", P);
+	// printf("num residuals: %d \n", K);
+	// printf("num views: %d\n", num_views);
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
-	ResidualState residualState = ResidualState::fromChunk(residual_buffer, K);
+	// ResidualState residualState = ResidualState::fromChunk(residual_buffer, K);
 
 
 	// printf("num residuals: %d\n", K);   //Useful prints for debugging
