@@ -170,13 +170,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum, cov3D= _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum, cov3D, conic_o = _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum, cov3D = _C.rasterize_gaussians_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales, grad_rotations, J_values, J_indices, p_sum, cov3D, conic_o = _C.rasterize_gaussians_backward(*args)
 
         grads = (
             grad_means3D,
@@ -208,6 +208,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         sparse_J.raster_settings.append(raster_settings)
         sparse_J.clamped = clamped
         sparse_J.cov3D = cov3D
+        sparse_J.conic_o = conic_o
+
         # sparse_J.radii = radii
 
         return grads
@@ -240,6 +242,7 @@ class SparseJacobianData:
     raster_settings: list[GaussianRasterizationSettings]
     clamped: torch.Tensor
     cov3D: torch.Tensor
+    conic_o: torch.Tensor
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings, sparse_jacobian):
@@ -533,6 +536,7 @@ class GaussNewton(Optimizer):
             rotations,
             sparse_jacobian.raster_settings[0].scale_modifier,
             sparse_jacobian.cov3D,
+            sparse_jacobian.conic_o,
             view_matrices, #sparse_jacobian.raster_settings[0].viewmatrix,
             proj_matrices, #sparse_jacobian.raster_settings[0].projmatrix,
             sparse_jacobian.raster_settings[0].tanfovx, 

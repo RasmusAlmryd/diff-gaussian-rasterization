@@ -1,5 +1,6 @@
 #include "auxiliary.h"
 #include "gauss_newton.h"
+#include "forward.h"
 // #include "backward.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
@@ -476,6 +477,100 @@ __device__ void computeCov2DCUDA_device(int P,
 	dL_dmeans[0] = dL_dmean;
 }
 
+// Forward method for converting the input spherical harmonics
+// coefficients of each Gaussian to a simple RGB color.
+__device__ glm::vec3 computeColorFromSHForward(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* dc, const float* shs, const bool* clamped)
+{
+	// The implementation is loosely based on code for 
+	// "Differentiable Point-Based Radiance Fields for 
+	// Efficient View Synthesis" by Zhang et al. (2022)
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir = pos - campos;
+	dir = dir / glm::length(dir);
+
+	glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3 result = SH_C0 * direct_color[0];
+
+	if (deg > 0)
+	{
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		result = result - SH_C1 * y * sh[0] + SH_C1 * z * sh[1] - SH_C1 * x * sh[2];
+
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			result = result +
+				SH_C2[0] * xy * sh[3] +
+				SH_C2[1] * yz * sh[4] +
+				SH_C2[2] * (2.0f * zz - xx - yy) * sh[5] +
+				SH_C2[3] * xz * sh[6] +
+				SH_C2[4] * (xx - yy) * sh[7];
+
+			if (deg > 2)
+			{
+				result = result +
+					SH_C3[0] * y * (3.0f * xx - yy) * sh[8] +
+					SH_C3[1] * xy * z * sh[9] +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[10] +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[11] +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[12] +
+					SH_C3[5] * z * (xx - yy) * sh[13] +
+					SH_C3[6] * x * (xx - 3.0f * yy) * sh[14];
+			}
+		}
+	}
+	result += 0.5f;
+
+	// RGB colors are clamped to positive values. If values are
+	// clamped, we need to keep track of this for the backward pass.
+	// clamped[3 * idx + 0] = (result.x < 0);
+	// clamped[3 * idx + 1] = (result.y < 0);
+	// clamped[3 * idx + 2] = (result.z < 0);
+	return glm::max(result, 0.0f);
+}
+
+// Forward version of 2D covariance matrix computation
+__device__ float3 computeCov2DForward(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
+{
+	// The following models the steps outlined by equations 29
+	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
+	// Additionally considers aspect / scaling of viewport.
+	// Transposes used to account for row-/column-major conventions.
+	float3 t = transformPoint4x3(mean, viewmatrix);
+
+	const float limx = 1.3f * tan_fovx;
+	const float limy = 1.3f * tan_fovy;
+	const float txtz = t.x / t.z;
+	const float tytz = t.y / t.z;
+	t.x = min(limx, max(-limx, txtz)) * t.z;
+	t.y = min(limy, max(-limy, tytz)) * t.z;
+
+	glm::mat3 J = glm::mat3(
+		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
+		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+		0, 0, 0);
+
+	glm::mat3 W = glm::mat3(
+		viewmatrix[0], viewmatrix[4], viewmatrix[8],
+		viewmatrix[1], viewmatrix[5], viewmatrix[9],
+		viewmatrix[2], viewmatrix[6], viewmatrix[10]);
+
+	glm::mat3 T = W * J;
+
+	glm::mat3 Vrk = glm::mat3(
+		cov3D[0], cov3D[1], cov3D[2],
+		cov3D[1], cov3D[3], cov3D[4],
+		cov3D[2], cov3D[4], cov3D[5]);
+
+	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
+
+	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
+}
+
 __device__ void computeCov3D_device(
     int idx, 
     const glm::vec3 scale, 
@@ -625,6 +720,7 @@ void test_delta_residuals(
     uint32_t M,
     int P, 
     int D, 
+    int num_views,
     int max_coeffs, // max_coeffs = M
     const float* means3D, //const float3* means3D,
     const int* radii,
@@ -636,6 +732,7 @@ void test_delta_residuals(
     const float* rotations, //const glm::vec4* rotations,
     const float scale_modifier,
     const float* cov3Ds,
+    const float* conic_o,
     const float* viewmatrix,
     const float* projmatrix,
     const int W, int H,
@@ -646,47 +743,137 @@ void test_delta_residuals(
     ){
 
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= P*M) return;
+    if(idx >= P*M*num_views) return;
 
-    int x = idx % P;  // Gaussian index
-    int y = idx / P;  // Pixel index
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
+    // int x = (idx % P) % (P*M);  // Gaussian index
+    // int y = (idx / P) % (P*M);  // Pixel index
+    int x = (idx % (P*M)) % P;  // Gaussian index
+    int y = (idx % (P*M)) / P;  // Pixel index
+    int view_idx = idx / (P*M);  // View index
 
-    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
+
+    const float* view_matrix = viewmatrix + (16 * view_idx);
+    const float* proj_matrix = projmatrix + (16 * view_idx);
+    const float* cam_pos = campos + (3 * view_idx);
+    const int* view_radii = radii + view_idx;
+
+    const int index = x + y * P + view_idx * P * M;
 
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P;
-    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
-    float G = J[index * 13 + 2];
-    float dr_dinvdepths = J[index * 13 + 3];
+    // float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    // float G = J[index * 13 + 2];
+    // float dr_dinvdepths = J[index * 13 + 3];
     
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*13 + ch + 4];
-    }
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*13 + ch + 4];
+    // }
     
-    float dr_dalpha_channel[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
-    }
-    const float conic_w = J[index * 13 + 10];
-    const float dG_ddelx = J[index * 13 + 11];
-    const float dG_ddely = J[index * 13 + 12];
+    // float dr_dalpha_channel[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    // }
+    // const float conic_w = J[index * 13 + 10];
+    // const float dG_ddelx = J[index * 13 + 11];
+    // const float dG_ddely = J[index * 13 + 12];
+
+    float contributor = J[index * 13 + 4];
+    if(!contributor) return;
     
 
+    const float* conic_opacity = conic_o + x * 4;
+
+    float3 p_orig = { means3D[3 * x], means3D[3 * x + 1], means3D[3 * x + 2] };
+	float4 p_hom = transformPoint4x4(p_orig, proj_matrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+    float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+
+    const float* cov3D = cov3Ds + x * 6;
+    float3 cov = computeCov2DForward(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_matrix);
+
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+	// Invert covariance (EWA algorithm)
+	float det = det_cov_plus_h_cov;
+
+	if (det == 0.0f){
+		return;
+    }
+	float det_inv = 1.f / det;
+	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
+
+    float4 con_o = { conic.x, conic.y, conic.z, opacities[x] * h_convolution_scaling };
+    // float4 con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+
+    const uint32_t pix_id = y;
+    const uint2 pix = {pix_id % W, pix_id / W };
+    const float2 pixf = {(float) pix.x, (float) pix.y};
+    const float2 xy = point_image;
+    // bool valid_pixel = pix.x < W && pix.y < H;
+    
+    if (W <= pix.x || H <= pix.y) return;
+
+    bool done = false;
+    
+    const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+    if (power > 0.0f) return;
+    const float G = exp(power);
+    const float alpha = min(0.99f, con_o.w * G);
+    
+
+    if (alpha < 1.0f / 255.0f) return;
+
+    glm::vec3 result = computeColorFromSHForward(x, D, M, (glm::vec3*)means3D, *(glm::vec3*)cam_pos, dc, shs, clamped);
+
+    float ar[C] = {0.0f};
+    float T = J[index * 13 + 0];
+    for (int ch = 0; ch < C; ++ch) {
+        ar[ch] = J[index * 13 + ch + 1];
+    }
+
+    const float weight = alpha * T;
+
+    float bg_dot_dpixel = 0.0f;
+    float dr_dcolors[C] = {0.0f};
+	float dr_dalpha_channel[C] = {0.0f};
+
+
+    const float dr_dch = -1.0f;
+			
+	for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = weight * dr_dch;
+        dr_dalpha_channel[ch] = ((result[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; 
+    }
+
+
+    // // Helpful reusable temporary variables
+    // const float dL_dG = con_o.w * dL_dalpha;
+    const float gdx = G * d.x;
+    const float gdy = G * d.y;
+    const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
+    const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
+
+    const float dr_dinvdepths = 0.0f;
+
+    const float conic_w = con_o.w;
+    // const float conic_w = conic_opacity[3];
+
+    
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
-
-    if(idx == 0){
-        printf("conic_w: %g \n", conic_w);
-        printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-    }
-
-    // if(dr_dcolors[0] != 0 || dr_dcolors[1] != 0 || dr_dcolors[2] != 0){
-    //     printf("dr_dcolors: r: %g, g: %g, b: %g \n", dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-
-    // }
 
     atomicAdd(&b[14 + x * num_params_per_gauss + 0], 1);
     atomicAdd(&b[15 + x * num_params_per_gauss + 0], d.x);
@@ -711,6 +898,10 @@ void test_delta_residuals(
     atomicAdd(&b[15 + x * num_params_per_gauss + 17], ((glm::vec4*)rotations)[x].y);
     atomicAdd(&b[15 + x * num_params_per_gauss + 18], ((glm::vec4*)rotations)[x].z);
     atomicAdd(&b[15 + x * num_params_per_gauss + 19], ((glm::vec4*)rotations)[x].w);
+    b[15 + x * num_params_per_gauss + 20] = J[0 *13 + 5];
+    b[15 + x * num_params_per_gauss + 21] = J[0 *13 + 6];
+    // atomicAdd(&b[15 + x * num_params_per_gauss + 22], contributor);
+
 
 
 
@@ -896,13 +1087,10 @@ void calc_b_non_sparse(
     if(idx >= P*M*num_views) return;
 
     // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
-    // int x = (idx % P) % (P*M);  // Gaussian index
-    // int y = (idx / P) % (P*M);  // Pixel index
     int x = (idx % (P*M)) % P;  // Gaussian index
     int y = (idx % (P*M)) / P;  // Pixel index
     int view_idx = idx / (P*M);  // View index
 
-    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
     const float* view_matrix = viewmatrix + (16 * view_idx);
@@ -910,25 +1098,124 @@ void calc_b_non_sparse(
     const float* cam_pos = campos + (3 * view_idx);
     const int* view_radii = radii + view_idx;
 
+    const int index = x + y * P + view_idx * P * M;
+    bool done = false;
+
+    float contributor = J[index * 13 + 4];
+    if(!contributor) return;
+    // if(!contributor) done = false;
+    
+
+    // const float* conic_opacity = conic_o + x * 4;
+
+    float3 p_orig = { means3D[3 * x], means3D[3 * x + 1], means3D[3 * x + 2] };
+	float4 p_hom = transformPoint4x4(p_orig, proj_matrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+    float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+
+    const float* cov3D = cov3Ds + x * 6;
+    float3 cov = computeCov2DForward(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_matrix);
+
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+	// Invert covariance (EWA algorithm)
+	float det = det_cov_plus_h_cov;
+
+	if (det == 0.0f){
+		return;
+    }
+	float det_inv = 1.f / det;
+	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
+
+    float4 con_o = { conic.x, conic.y, conic.z, opacities[x] * h_convolution_scaling };
+    // float4 con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+
+    const uint32_t pix_id = y;
+    const uint2 pix = {pix_id % W, pix_id / W };
+    const float2 pixf = {(float) pix.x, (float) pix.y};
+    const float2 xy = point_image;
+    // bool valid_pixel = pix.x < W && pix.y < H;
+    
+    // if (W <= pix.x || H <= pix.y) return;
+
+    
+    float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+    if (power > 0.0f) return;
+    // if (power > 0.0f) done = true;
+    float G = exp(power);
+    const float alpha = min(0.99f, con_o.w * G);
+    
+
+    if (alpha < 1.0f / 255.0f) return;
+    // if (alpha < 1.0f / 255.0f) done = false;
+
+    glm::vec3 result = computeColorFromSHForward(x, D, M, (glm::vec3*)means3D, *(glm::vec3*)cam_pos, dc, shs, clamped);
+
+    float ar[C] = {0.0f};
+    float T = J[index * 13 + 0];
+    for (int ch = 0; ch < C; ++ch) {
+        ar[ch] = J[index * 13 + ch + 1];
+    }
+
+    const float weight = alpha * T;
+
+    float bg_dot_dpixel = 0.0f;
+    float dr_dcolors[C] = {0.0f};
+	float dr_dalpha_channel[C] = {0.0f};
+
+
+    const float dr_dch = -1.0f;
+			
+
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = weight * dr_dch;
+        dr_dalpha_channel[ch] = ((result[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; 
+    }
+
+
+
+    // // Helpful reusable temporary variables
+    // const float dL_dG = con_o.w * dL_dalpha;
+    const float gdx = G * d.x;
+    const float gdy = G * d.y;
+
+    float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
+    float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
+
+
+    const float dr_dinvdepths = 0.0f;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P + view_idx * P * M;
-    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
-    float G = J[index * 13 + 2];
-    float dr_dinvdepths = J[index * 13 + 3];
+    // float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    // float G = J[index * 13 + 2];
+    // float dr_dinvdepths = 0.0f;
     
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*13 + ch + 4];
-    }
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*13 + ch + 4];
+    // }
     
-    float dr_dalpha_channel[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
-    }
-    const float conic_w = J[index * 13 + 10];
-    const float dG_ddelx = J[index * 13 + 11];
-    const float dG_ddely = J[index * 13 + 12];
+    // float dr_dalpha_channel[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    // }
+    // const float conic_w = J[index * 13 + 10];
+    // const float dG_ddelx = J[index * 13 + 11];
+    // const float dG_ddely = J[index * 13 + 12];
+
+    
+
     
 
     const float ddelx_dx = 0.5 * W;
@@ -938,9 +1225,10 @@ void calc_b_non_sparse(
     for (int ch = 0; ch < C; ch++) {
         
         // Helpful reusable temporary variables
-        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
-        const float gdx = G * d.x; //
-        const float gdy = G * d.y; //
+        const float dL_dG = con_o.w * dr_dalpha_channel[ch]; //
+        // const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        // const float gdx = G * d.x; //
+        // const float gdy = G * d.y; //
         // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
         // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
         
@@ -1033,11 +1321,7 @@ void calc_b_non_sparse(
         dr_drot.z = dr_drot_un.z;
         dr_drot.w = dr_drot_un.w;
 
-        // if(x == 3 && isnan(dr_dscale.z) ){
-        //     printf("Nan: [%d],  scale x: %f, y: %f, z: %f, | %f, %f, %f, %f, %f, %f,", idx, scale.x, scale.y, scale.z, dr_dcov3D[0],dr_dcov3D[1],dr_dcov3D[2],dr_dcov3D[3],dr_dcov3D[4],dr_dcov3D[5]);
-        // }
-    
-    
+
         atomicAdd(&b[x * num_params_per_gauss + 0], -dr_dmean.x * residual);
         atomicAdd(&b[x * num_params_per_gauss + 1], -dr_dmean.y * residual);
         atomicAdd(&b[x * num_params_per_gauss + 2], -dr_dmean.z * residual);
@@ -1281,12 +1565,11 @@ void residual_dot_sum(
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= P*M*num_views) return;
 
-    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
     int x = (idx % (P*M)) % P;  // Gaussian index
     int y = (idx % (P*M)) / P;  // Pixel index
     int view_idx = idx / (P*M);  // View index
 
-    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
     const float* view_matrix = viewmatrix + (16 * view_idx);
@@ -1294,36 +1577,137 @@ void residual_dot_sum(
     const float* cam_pos = campos + (3 * view_idx);
     const int* view_radii = radii + view_idx;
 
+    const int index = x + y * P + view_idx * P * M;
+    bool done = false;
+
+    float contributor = J[index * 13 + 4];
+    if(!contributor) return;
+    // if(!contributor) done = false;
+    
+
+    // const float* conic_opacity = conic_o + x * 4;
+
+    float3 p_orig = { means3D[3 * x], means3D[3 * x + 1], means3D[3 * x + 2] };
+	float4 p_hom = transformPoint4x4(p_orig, proj_matrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+    float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+
+    const float* cov3D = cov3Ds + x * 6;
+    float3 cov = computeCov2DForward(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_matrix);
+
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+	// Invert covariance (EWA algorithm)
+	float det = det_cov_plus_h_cov;
+
+	if (det == 0.0f){
+		return;
+    }
+	float det_inv = 1.f / det;
+	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
+
+    float4 con_o = { conic.x, conic.y, conic.z, opacities[x] * h_convolution_scaling };
+    // float4 con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+
+    const uint32_t pix_id = y;
+    const uint2 pix = {pix_id % W, pix_id / W };
+    const float2 pixf = {(float) pix.x, (float) pix.y};
+    const float2 xy = point_image;
+    // bool valid_pixel = pix.x < W && pix.y < H;
+    
+    // if (W <= pix.x || H <= pix.y) return;
+
+    
+    float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+    if (power > 0.0f) return;
+    // if (power > 0.0f) done = true;
+    float G = exp(power);
+    const float alpha = min(0.99f, con_o.w * G);
+    
+
+    if (alpha < 1.0f / 255.0f) return;
+    // if (alpha < 1.0f / 255.0f) done = false;
+
+    glm::vec3 result = computeColorFromSHForward(x, D, M, (glm::vec3*)means3D, *(glm::vec3*)cam_pos, dc, shs, clamped);
+
+    float ar[C] = {0.0f};
+    float T = J[index * 13 + 0];
+    for (int ch = 0; ch < C; ++ch) {
+        ar[ch] = J[index * 13 + ch + 1];
+    }
+
+    const float weight = alpha * T;
+
+    float bg_dot_dpixel = 0.0f;
+    float dr_dcolors[C] = {0.0f};
+	float dr_dalpha_channel[C] = {0.0f};
+
+
+    const float dr_dch = -1.0f;
+			
+
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = weight * dr_dch;
+        dr_dalpha_channel[ch] = ((result[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; 
+    }
+
+
+
+    // // Helpful reusable temporary variables
+    // const float dL_dG = con_o.w * dL_dalpha;
+    const float gdx = G * d.x;
+    const float gdy = G * d.y;
+
+    float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
+    float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
+
+
+    const float dr_dinvdepths = 0.0f;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P + view_idx * P * M;
-    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
-    float G = J[index * 13 + 2];
-    float dr_dinvdepths = J[index * 13 + 3];
+    // float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    // float G = J[index * 13 + 2];
+    // float dr_dinvdepths = 0.0f;
     
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*13 + ch + 4];
-    }
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*13 + ch + 4];
+    // }
     
-    float dr_dalpha_channel[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
-    }
-    const float conic_w = J[index * 13 + 10];
-    const float dG_ddelx = J[index * 13 + 11];
-    const float dG_ddely = J[index * 13 + 12];
+    // float dr_dalpha_channel[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    // }
+    // const float conic_w = J[index * 13 + 10];
+    // const float dG_ddelx = J[index * 13 + 11];
+    // const float dG_ddely = J[index * 13 + 12];
+
+    
+
     
 
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
+
     for (int ch = 0; ch < C; ch++) {
         
         // Helpful reusable temporary variables
-        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
-        const float gdx = G * d.x; //
-        const float gdy = G * d.y; //
+        const float dL_dG = con_o.w * dr_dalpha_channel[ch]; //
+        // const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        // const float gdx = G * d.x; //
+        // const float gdy = G * d.y; //
         // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
         // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
         
@@ -1630,12 +2014,11 @@ void sum_residuals(
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= P*M*num_views) return;
 
-    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
     int x = (idx % (P*M)) % P;  // Gaussian index
     int y = (idx % (P*M)) / P;  // Pixel index
     int view_idx = idx / (P*M);  // View index
 
-    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
     const float* view_matrix = viewmatrix + (16 * view_idx);
@@ -1643,36 +2026,137 @@ void sum_residuals(
     const float* cam_pos = campos + (3 * view_idx);
     const int* view_radii = radii + view_idx;
 
+    const int index = x + y * P + view_idx * P * M;
+    bool done = false;
+
+    float contributor = J[index * 13 + 4];
+    if(!contributor) return;
+    // if(!contributor) done = false;
+    
+
+    // const float* conic_opacity = conic_o + x * 4;
+
+    float3 p_orig = { means3D[3 * x], means3D[3 * x + 1], means3D[3 * x + 2] };
+	float4 p_hom = transformPoint4x4(p_orig, proj_matrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+    float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+
+    const float* cov3D = cov3Ds + x * 6;
+    float3 cov = computeCov2DForward(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_matrix);
+
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+	// Invert covariance (EWA algorithm)
+	float det = det_cov_plus_h_cov;
+
+	if (det == 0.0f){
+		return;
+    }
+	float det_inv = 1.f / det;
+	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
+
+    float4 con_o = { conic.x, conic.y, conic.z, opacities[x] * h_convolution_scaling };
+    // float4 con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+
+    const uint32_t pix_id = y;
+    const uint2 pix = {pix_id % W, pix_id / W };
+    const float2 pixf = {(float) pix.x, (float) pix.y};
+    const float2 xy = point_image;
+    // bool valid_pixel = pix.x < W && pix.y < H;
+    
+    // if (W <= pix.x || H <= pix.y) return;
+
+    
+    float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+    if (power > 0.0f) return;
+    // if (power > 0.0f) done = true;
+    float G = exp(power);
+    const float alpha = min(0.99f, con_o.w * G);
+    
+
+    if (alpha < 1.0f / 255.0f) return;
+    // if (alpha < 1.0f / 255.0f) done = false;
+
+    glm::vec3 result = computeColorFromSHForward(x, D, M, (glm::vec3*)means3D, *(glm::vec3*)cam_pos, dc, shs, clamped);
+
+    float ar[C] = {0.0f};
+    float T = J[index * 13 + 0];
+    for (int ch = 0; ch < C; ++ch) {
+        ar[ch] = J[index * 13 + ch + 1];
+    }
+
+    const float weight = alpha * T;
+
+    float bg_dot_dpixel = 0.0f;
+    float dr_dcolors[C] = {0.0f};
+	float dr_dalpha_channel[C] = {0.0f};
+
+
+    const float dr_dch = -1.0f;
+			
+
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = weight * dr_dch;
+        dr_dalpha_channel[ch] = ((result[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; 
+    }
+
+
+
+    // // Helpful reusable temporary variables
+    // const float dL_dG = con_o.w * dL_dalpha;
+    const float gdx = G * d.x;
+    const float gdy = G * d.y;
+
+    float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
+    float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
+
+
+    const float dr_dinvdepths = 0.0f;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P + view_idx * P * M;
-    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
-    float G = J[index * 13 + 2];
-    float dr_dinvdepths = J[index * 13 + 3];
+    // float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    // float G = J[index * 13 + 2];
+    // float dr_dinvdepths = 0.0f;
     
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*13 + ch + 4];
-    }
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*13 + ch + 4];
+    // }
     
-    float dr_dalpha_channel[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
-    }
-    const float conic_w = J[index * 13 + 10];
-    const float dG_ddelx = J[index * 13 + 11];
-    const float dG_ddely = J[index * 13 + 12];
+    // float dr_dalpha_channel[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    // }
+    // const float conic_w = J[index * 13 + 10];
+    // const float dG_ddelx = J[index * 13 + 11];
+    // const float dG_ddely = J[index * 13 + 12];
+
+    
+
     
 
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
+
     for (int ch = 0; ch < C; ch++) {
         
         // Helpful reusable temporary variables
-        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
-        const float gdx = G * d.x; //
-        const float gdy = G * d.y; //
+        const float dL_dG = con_o.w * dr_dalpha_channel[ch]; //
+        // const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        // const float gdx = G * d.x; //
+        // const float gdy = G * d.y; //
         // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
         // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
         
@@ -2075,12 +2559,11 @@ void diagJTJ(
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= P*M*num_views) return;
 
-    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H);
+    // int index = (gaussian_idx + pix_id * P ) + view_idx * P * (W*H); 
     int x = (idx % (P*M)) % P;  // Gaussian index
     int y = (idx % (P*M)) / P;  // Pixel index
     int view_idx = idx / (P*M);  // View index
 
-    const uint2 pix = {y / W, y % W};
     const int num_params_per_gauss = 59;
 
     const float* view_matrix = viewmatrix + (16 * view_idx);
@@ -2088,36 +2571,137 @@ void diagJTJ(
     const float* cam_pos = campos + (3 * view_idx);
     const int* view_radii = radii + view_idx;
 
+    const int index = x + y * P + view_idx * P * M;
+    bool done = false;
+
+    float contributor = J[index * 13 + 4];
+    if(!contributor) return;
+    // if(!contributor) done = false;
+    
+
+    // const float* conic_opacity = conic_o + x * 4;
+
+    float3 p_orig = { means3D[3 * x], means3D[3 * x + 1], means3D[3 * x + 2] };
+	float4 p_hom = transformPoint4x4(p_orig, proj_matrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+    float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+
+    const float* cov3D = cov3Ds + x * 6;
+    float3 cov = computeCov2DForward(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_matrix);
+
+	constexpr float h_var = 0.3f;
+	const float det_cov = cov.x * cov.z - cov.y * cov.y;
+	cov.x += h_var;
+	cov.z += h_var;
+	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
+
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+	// Invert covariance (EWA algorithm)
+	float det = det_cov_plus_h_cov;
+
+	if (det == 0.0f){
+		return;
+    }
+	float det_inv = 1.f / det;
+	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
+
+    float4 con_o = { conic.x, conic.y, conic.z, opacities[x] * h_convolution_scaling };
+    // float4 con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+
+    const uint32_t pix_id = y;
+    const uint2 pix = {pix_id % W, pix_id / W };
+    const float2 pixf = {(float) pix.x, (float) pix.y};
+    const float2 xy = point_image;
+    // bool valid_pixel = pix.x < W && pix.y < H;
+    
+    // if (W <= pix.x || H <= pix.y) return;
+
+    
+    float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+    if (power > 0.0f) return;
+    // if (power > 0.0f) done = true;
+    float G = exp(power);
+    const float alpha = min(0.99f, con_o.w * G);
+    
+
+    if (alpha < 1.0f / 255.0f) return;
+    // if (alpha < 1.0f / 255.0f) done = false;
+
+    glm::vec3 result = computeColorFromSHForward(x, D, M, (glm::vec3*)means3D, *(glm::vec3*)cam_pos, dc, shs, clamped);
+
+    float ar[C] = {0.0f};
+    float T = J[index * 13 + 0];
+    for (int ch = 0; ch < C; ++ch) {
+        ar[ch] = J[index * 13 + ch + 1];
+    }
+
+    const float weight = alpha * T;
+
+    float bg_dot_dpixel = 0.0f;
+    float dr_dcolors[C] = {0.0f};
+	float dr_dalpha_channel[C] = {0.0f};
+
+
+    const float dr_dch = -1.0f;
+			
+
+    for (int ch = 0; ch < C; ++ch) {
+        dr_dcolors[ch] = weight * dr_dch;
+        dr_dalpha_channel[ch] = ((result[ch] * T) - (1.0f / (1.0f - alpha)) * (-ar[ch])) * dr_dch; 
+    }
+
+
+
+    // // Helpful reusable temporary variables
+    // const float dL_dG = con_o.w * dL_dalpha;
+    const float gdx = G * d.x;
+    const float gdy = G * d.y;
+
+    float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
+    float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
+
+
+    const float dr_dinvdepths = 0.0f;
+
 
     // Calculate the residuals wrt intermideiary parameters
-    int index= x + y * P + view_idx * P * M;
-    float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
-    float G = J[index * 13 + 2];
-    float dr_dinvdepths = J[index * 13 + 3];
+    // float2 d = {J[index * 13 + 0], J[index * 13 + 1]};
+    // float G = J[index * 13 + 2];
+    // float dr_dinvdepths = 0.0f;
     
-    float dr_dcolors[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dcolors[ch] = J[index*13 + ch + 4];
-    }
+    // float dr_dcolors[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dcolors[ch] = J[index*13 + ch + 4];
+    // }
     
-    float dr_dalpha_channel[C] = {0.0f};
-    for (int ch = 0; ch < C; ++ch) {
-        dr_dalpha_channel[ch] = J[index*13 + ch + 7];
-    }
-    const float conic_w = J[index * 13 + 10];
-    const float dG_ddelx = J[index * 13 + 11];
-    const float dG_ddely = J[index * 13 + 12];
+    // float dr_dalpha_channel[C] = {0.0f};
+    // for (int ch = 0; ch < C; ++ch) {
+    //     dr_dalpha_channel[ch] = J[index*13 + ch + 7];
+    // }
+    // const float conic_w = J[index * 13 + 10];
+    // const float dG_ddelx = J[index * 13 + 11];
+    // const float dG_ddely = J[index * 13 + 12];
+
+    
+
     
 
     const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
+
     for (int ch = 0; ch < C; ch++) {
         
         // Helpful reusable temporary variables
-        const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
-        const float gdx = G * d.x; //
-        const float gdy = G * d.y; //
+        const float dL_dG = con_o.w * dr_dalpha_channel[ch]; //
+        // const float dL_dG = conic_w * dr_dalpha_channel[ch]; //
+        // const float gdx = G * d.x; //
+        // const float gdy = G * d.y; //
         // const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y; //
         // const float dG_ddely = -gdy * con_o.z - gdx * con_o.y; //
         
@@ -2412,6 +2996,7 @@ void GaussNewton::gaussNewtonUpdate(
 	const float* rotations, //const glm::vec4* rotations,
 	const float scale_modifier,
 	const float* cov3Ds,
+	const float* conic_o,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const float tan_fovx, float tan_fovy,
@@ -2488,13 +3073,14 @@ void GaussNewton::gaussNewtonUpdate(
 
     // printf("test residuals");
 
-    // test_delta_residuals<NUM_CHANNELS_3DGS><<<(P*M+255)/256, 256>>>(
+    // test_delta_residuals<NUM_CHANNELS_3DGS><<<(P*M*num_views+255)/256, 256>>>(
     //     b,
     //     J, 
     //     N, 
     //     M, 
     //     P, 
-    //     D, 
+    //     D,
+    //     num_views,
     //     max_coeffs, 
     //     means3D, 
     //     radii, 
@@ -2506,6 +3092,7 @@ void GaussNewton::gaussNewtonUpdate(
     //     rotations, 
     //     scale_modifier, 
     //     cov3Ds, 
+    //     conic_o,
     //     viewmatrix, 
     //     projmatrix, 
     //     width,
@@ -2563,7 +3150,7 @@ void GaussNewton::gaussNewtonUpdate(
         printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
     }
 
-    
+    // return;
 
     float* check_b;
     float h_check_b;

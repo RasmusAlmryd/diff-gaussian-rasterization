@@ -273,7 +273,7 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, clamped, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -335,6 +335,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
   torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
   torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());
+  torch::Tensor conic_o = torch::zeros({P, 4}, means3D.options());
 
   if(P != 0)
   {  
@@ -378,13 +379,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 		residual_index.contiguous().data<uint64_t>(),
 		p_sum.contiguous().data<uint32_t>(),
 		cov3D.contiguous().data<float>(),
+		conic_o.contiguous().data<float>(),
 		antialiasing,
 		num_views,
 		view_index,
 		debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum, cov3D);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum, cov3D, conic_o);
 }
 
 torch::Tensor markVisible(
@@ -447,6 +449,7 @@ void gaussNewtonUpdate(
 	const torch::Tensor &rotations,
 	const float scale_modifier,
 	const torch::Tensor cov3Ds,
+	const torch::Tensor conic_o,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
 	const float tan_fovx, float tan_fovy,
@@ -506,6 +509,7 @@ void gaussNewtonUpdate(
 		rotations.contiguous().data<float>(),
 		scale_modifier,
 		cov3Ds.contiguous().data<float>(),
+		conic_o.contiguous().data<float>(),
 		viewmatrix.contiguous().data<float>(),
 		projmatrix.contiguous().data<float>(),
 		tan_fovx, tan_fovy,

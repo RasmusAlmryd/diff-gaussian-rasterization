@@ -795,6 +795,7 @@ void CudaRasterizer::Rasterizer::backward(
 	uint64_t* residual_index,
 	uint32_t* p_sum, 
 	float* cov3D,
+	float* conic_o,
 	bool antialiasing,
 	const int num_views,
 	const int view_index,
@@ -918,9 +919,11 @@ void CudaRasterizer::Rasterizer::backward(
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
+	const float4* conic_o_ptr = geomState.conic_opacity;
 
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(cov3D, cov3D_ptr, P * 6 * sizeof(float), cudaMemcpyDeviceToDevice), debug);
+	CHECK_CUDA(cudaMemcpy(conic_o, conic_o_ptr, P * sizeof(float4), cudaMemcpyDeviceToDevice), debug);
 
 	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
 		(float3*)means3D,

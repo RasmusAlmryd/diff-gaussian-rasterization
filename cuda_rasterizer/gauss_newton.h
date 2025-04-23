@@ -40,6 +40,7 @@ namespace GaussNewton {
 	    const float* rotations,
 	    const float scale_modifier,
 	    const float* cov3Ds,
+	    const float* conic_o,
 	    const float* viewmatrix,
 	    const float* projmatrix,
 	    const float tan_fovx, float tan_fovy,

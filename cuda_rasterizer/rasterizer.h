@@ -101,6 +101,7 @@ namespace CudaRasterizer
 			uint64_t* residual_index,
 			uint32_t* p_sum,
 			float* cov3D,
+			float* conic_o,
 			bool antialiasing,
 			const int num_views,
 			const int view_index,
