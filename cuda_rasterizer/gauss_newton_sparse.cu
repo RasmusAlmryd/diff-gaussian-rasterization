@@ -51,7 +51,37 @@ namespace cg = cooperative_groups;
 // }
 
 __global__ 
-void isnan_test(const float *data, bool *result, uint32_t N) {
+void isnan_test_f(const float *data, bool *result, uint32_t N) {
+    // Shared flag for early exit
+    __shared__ bool found_nan;
+
+    // Initialize shared flag (only one thread per block)
+    if (threadIdx.x == 0) {
+        found_nan = false;
+    }
+    __syncthreads();
+
+    // Get global thread index
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Loop over data if threads < N
+    for (uint32_t i = idx; i < N; i += gridDim.x * blockDim.x) {
+        if (isnan(data[i])) {
+            found_nan = true;
+            break; // Early exit for this thread
+        }
+    }
+
+    __syncthreads();
+
+    // Set global result (by one thread only)
+    if (threadIdx.x == 0 && found_nan) {
+        *result = true;
+    }
+}
+
+__global__ 
+void isnan_test_d(const double *data, bool *result, uint32_t N) {
     // Shared flag for early exit
     __shared__ bool found_nan;
 
@@ -103,7 +133,7 @@ void dot(float *a, float *b, float *c, uint32_t N){
 }
 
 __global__ 
-void dot_d(float *a, float *b, double *c, uint32_t N){
+void dot_d(double *a, double *b, double *c, uint32_t N){
     __shared__ double temp[THREADS_PER_BLOCK];
     uint32_t idx = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -157,7 +187,7 @@ void next_x(float* x, float* p, float* alpha, uint32_t N){
 }
 
 __global__
-void next_x_d(float* x, float* p, double* alpha, uint32_t N){
+void next_x_d(float* x, double* p, double* alpha, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     x[idx] = x[idx] + *alpha * p[idx];
@@ -173,10 +203,10 @@ void next_p(float* z, float* p, float* beta, uint32_t N){
 }
 
 __global__
-void next_p_d(float* z, float* p, double* beta, uint32_t N){
+void next_p_d(double* z, double* p, double* beta, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
-    float new_val = z[idx] + *beta * p[idx];
+    double new_val = z[idx] + *beta * p[idx];
     p[idx] = new_val;
 }
 
@@ -189,10 +219,10 @@ void next_r(float* r, float* Ap, float* alpha, uint32_t N){
 } 
 
 __global__
-void next_r_d(float* r, float* Ap, double* alpha, uint32_t N){
+void next_r_d(double* r, double* Ap, double* alpha, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
-    float new_val = r[idx] - *alpha * Ap[idx];
+    double new_val = r[idx] - *alpha * Ap[idx];
     r[idx] = new_val;
 } 
 
@@ -205,8 +235,24 @@ __global__ void next_z(float* M_precon, float* r, float* z, uint32_t N){
     z[idx] = z_val;
 }
 
+__global__ void next_z_d(double* M_precon, double* r, double* z, uint32_t N){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N) return;
+    double denominator = M_precon[idx];
+    double inv = 1.0 / (denominator + 1e-8f);
+    double z_val = inv * r[idx];
+    z[idx] = z_val;
+}
+
 __global__ 
 void subtract(float* a, float* b, float* c, uint32_t N){
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= N) return;
+    c[idx] = a[idx] - b[idx];
+}
+
+__global__ 
+void subtract_d(double* a, double* b, double* c, uint32_t N){
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if(idx >= N) return;
     c[idx] = a[idx] - b[idx];
@@ -755,16 +801,6 @@ __device__ void preprocessCUDA_device(
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[0] += dL_dmean;
 
-    if(isnan(dL_dmeans->x)||isnan(dL_dmeans->y)||isnan(dL_dmeans->z)){
-        bool proj_nan = false;
-        for(int i = 0; i < 16; i++){
-            if(isnan(proj[i])){
-                proj_nan = true;
-            }
-        }
-        printf(" before dr_dmean [%g, %g, %g], m_w: %g, mul: [%g, %g], proj nan: %d", dL_dmeans->x, dL_dmeans->y, dL_dmeans->z, m_w, mul1, mul2, proj_nan);
-    }
-
 	// Compute gradient updates due to computing colors from SHs
 	if (shs)
 		computeColorFromSH_device(idx, D, M, (glm::vec3*)means, *campos, dc, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_ddc, (glm::vec3*)dL_dsh);
@@ -773,10 +809,6 @@ __device__ void preprocessCUDA_device(
 	// Compute gradient updates due to computing covariance from scale/rotation
 	if (scales)
 		computeCov3D_device(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
-
-    if(isnan(dL_dmeans->x)||isnan(dL_dmeans->y)||isnan(dL_dmeans->z)){
-        printf(" after dr_dmean [%g, %g, %g]", dL_dmeans->x, dL_dmeans->y, dL_dmeans->z);
-    }
 }
 
 template<int C>
@@ -828,7 +860,6 @@ void precompute_gradient_help_variables(
 	float det = det_cov_plus_h_cov;
 
 	if (det == 0.0f){
-        printf("det == 0.0f AAAAAAAA!");
 		return;
     }
 	float det_inv = 1.f / det;
@@ -891,8 +922,6 @@ void compute_gradients(
     glm::vec3* dr_dsh
 ){
 
-    if (G > 1)
-        return;
     const float alpha = min(0.99f, con_o.w * G);
 
     if (alpha < 1.0f / 255.0f)
@@ -1010,25 +1039,6 @@ void compute_gradients(
     // dr_drot->y = dr_drot_un.y;
     // dr_drot->z = dr_drot_un.z;
     // dr_drot->w = dr_drot_un.w;
-
-    
-
-    if(isnan(dr_dmean->x)||isnan(dr_dmean->y)||isnan(dr_dmean->z)){
-        printf("mean [%g, %g, %g], 2d: [%g, %g], id: %d, dr_dcolors: [%g, %g, %g], conic: [%g, %g, %g, %g,], dL_dG: %g, dG_ddelx: %g, dG_ddely: %g, gdx: %g, d: [%g, %g],  means: [%g, %g, %g]\n",dr_dmean->x, dr_dmean->y, dr_dmean->z, dr_dmean2D.x, dr_dmean2D.y, gaussian_id, dr_dcolors[0], dr_dcolors[1], dr_dcolors[2], con_o.x, con_o.y, con_o.z, con_o.w, dL_dG, gdx, dG_ddelx, dG_ddely, d.x, d.y, means3D[gaussian_id *3], means3D[gaussian_id *3+1], means3D[gaussian_id *3+2]);
-    }
-    if(isnan(dr_dscale->x)||isnan(dr_dscale->y)||isnan(dr_dscale->z)){
-        printf("scale nan, id: %d, dr_dcolors: [%g, %g, %g], \n", gaussian_id, dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-    }
-    if(isnan(*dr_dopacity)){
-        printf("opacity nan, id: %d, dr_dcolors: [%g, %g, %g], G: %g ,dr_dalpha_channel: %g, conic: [%g, %g, %g, %g,]\n", gaussian_id, dr_dcolors[0], dr_dcolors[1], dr_dcolors[2], G, dr_dalpha_channel, con_o.x, con_o.y, con_o.z, con_o.w);
-    }
-    if(isnan(dr_drot->x)||isnan(dr_drot->y)||isnan(dr_drot->z)||isnan(dr_drot->w)){
-        printf("rotation nan, id: %d, dr_dcolors: [%g, %g, %g], \n", gaussian_id, dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-    }
-    if(isnan(dr_ddc->x)||isnan(dr_ddc->y)||isnan(dr_ddc->z)){
-        printf("ddc nan, id: %d, dr_dcolors: [%g, %g, %g], \n", gaussian_id, dr_dcolors[0], dr_dcolors[1], dr_dcolors[2]);
-    }
-        
 }
 
 
@@ -1036,7 +1046,7 @@ void compute_gradients(
 template<uint32_t C>
 __global__
 void applyJr(
-    float* v, 
+    double* v, 
     float* residuals, 
     const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices, //index of values in J: int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
@@ -1081,7 +1091,6 @@ void applyJr(
         cache[t_idx * VALUES_PER_CACHE_ENTIRE + 2],
         cache[t_idx * VALUES_PER_CACHE_ENTIRE + 3],
     };
-
 
     // printf("P: %d, ar: (%g, %g, %g), T: %g \n",pix_id,  ar[0], ar[1], ar[2], T);
 
@@ -1210,7 +1219,7 @@ void applyJr(
 template<uint32_t C>
 __global__ 
 void diagJTJ(
-    float* M_precon, 
+    double* M_precon, 
     const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices, //index of values in J: int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
     const uint32_t num_cache_entries, // Number of non 
@@ -1376,8 +1385,8 @@ void diagJTJ(
 template<uint32_t C>
 __global__
 void residual_dot_sum(
-	float* v, 
-	float* residual_dot_v, 
+	double* v, 
+	double* residual_dot_v, 
     const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices, //index of values in J: int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
     const uint32_t num_cache_entries, // Number of non 
@@ -1542,8 +1551,8 @@ void residual_dot_sum(
 template<uint32_t C>
 __global__
 void sum_residuals(
-    float* Av, 
-	float* residual_dot_v, 
+    double* Av, 
+	double* residual_dot_v, 
     const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices, //index of values in J: int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
     const uint32_t num_cache_entries, // Number of non 
@@ -1707,8 +1716,8 @@ void sum_residuals(
 
 template<uint32_t C>
 void Av(
-	float* v, 
-    float* Av, 
+	double* v, 
+    double* Av, 
 	const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices, //index of values in J: int index = gaussian_idx + pix_id * P + view_index * P * (W*H);
     const uint32_t num_cache_entries, // Number of non 
@@ -1736,9 +1745,9 @@ void Av(
     const float* campos, //const glm::vec3* campos,
     bool antialiasing
 ){
-	float* residual_dot_v;
-    cudaMalloc(&residual_dot_v, num_views * M * C * sizeof(float));
-    cudaMemset(residual_dot_v, 0, num_views * M * C * sizeof(float));
+	double* residual_dot_v;
+    cudaMalloc(&residual_dot_v, num_views * M * C * sizeof(double));
+    cudaMemset(residual_dot_v, 0, num_views * M * C * sizeof(double));
 
 	residual_dot_sum<C><<<(num_cache_entries+255)/256, 256>>>(
         v, 
@@ -1857,9 +1866,9 @@ void GaussNewton::gaussNewtonUpdate(
     printf("tot num residuals: %d \n", M);
     printf("tot num views: %d \n", num_views);
 
-    float* b;
-    cudaMalloc(&b, N * sizeof(float));
-    cudaMemset(b,0, N * sizeof(float));
+    double* b;
+    cudaMalloc(&b, N * sizeof(double));
+    cudaMemset(b,0, N * sizeof(double));
 
     bool* test_bool;
     cudaMalloc(&test_bool, sizeof(bool));
@@ -1867,13 +1876,13 @@ void GaussNewton::gaussNewtonUpdate(
     bool h_bool;
 
     cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test<<<(M+255)/256, 256>>>(cache, test_bool, num_cache_entries);
+    isnan_test_f<<<(M+255)/256, 256>>>(cache, test_bool, num_cache_entries);
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("cache nan?: %d\n", h_bool);
 
 
     cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test<<<(M+255)/256, 256>>>(residuals, test_bool, M);
+    isnan_test_f<<<(M+255)/256, 256>>>(residuals, test_bool, M);
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("residuals nan?: %d\n", h_bool);
 
@@ -1909,7 +1918,7 @@ void GaussNewton::gaussNewtonUpdate(
     );
 
     cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test<<<(N+255)/256, 256>>>(b, test_bool, N);
+    isnan_test_d<<<(N+255)/256, 256>>>(b, test_bool, N);
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("b nan?: %d\n", h_bool);
 
@@ -1923,77 +1932,77 @@ void GaussNewton::gaussNewtonUpdate(
     //     }
     // }
 
-	float* check_b;
-    float h_check_b;
-    cudaMalloc(&check_b, sizeof(float));
-    cudaMemset(check_b, 0, sizeof(float));
-    dot<<<(N+255)/256, 256>>>(b, b, check_b, N);
-    cudaMemcpy(&h_check_b, check_b, sizeof(float), cudaMemcpyDeviceToHost);
+	double* check_b;
+    double h_check_b;
+    cudaMalloc(&check_b, sizeof(double));
+    cudaMemset(check_b, 0, sizeof(double));
+    dot_d<<<(N+255)/256, 256>>>(b, b, check_b, N);
+    cudaMemcpy(&h_check_b, check_b, sizeof(double), cudaMemcpyDeviceToHost);
     if(h_check_b == 0){
         printf("PCG: no data");
         cudaFree(b);
         return;
     }
 
-	float* Ap;
-    cudaMalloc(&Ap, N * sizeof(float));
-    cudaMemset(Ap, 0, N * sizeof(float));
+	double* Ap;
+    cudaMalloc(&Ap, N * sizeof(double));
+    cudaMemset(Ap, 0, N * sizeof(double));
 
-    CHECK_CUDA(Av<NUM_CHANNELS_3DGS>(
-        x,
-        Ap,
-		cache, 
-		cache_indices,
-		num_cache_entries,
-        N,
-        M,
-        P, 
-        D, 
-        num_views,
-        max_coeffs, 
-        means3D, 
-        radii, 
-        dc, 
-        shs, 
-        clamped, 
-        opacities, 
-        scales, 
-        rotations, 
-        scale_modifier, 
-        cov3Ds, 
-        viewmatrix, 
-        projmatrix, 
-        width,
-        height,
-        focal_x, 
-        focal_y, 
-        tan_fovx, 
-        tan_fovy, 
-        campos, 
-        antialiasing
-    ), debug);
+    // CHECK_CUDA(Av<NUM_CHANNELS_3DGS>(
+    //     x,
+    //     Ap,
+	// 	cache, 
+	// 	cache_indices,
+	// 	num_cache_entries,
+    //     N,
+    //     M,
+    //     P, 
+    //     D, 
+    //     num_views,
+    //     max_coeffs, 
+    //     means3D, 
+    //     radii, 
+    //     dc, 
+    //     shs, 
+    //     clamped, 
+    //     opacities, 
+    //     scales, 
+    //     rotations, 
+    //     scale_modifier, 
+    //     cov3Ds, 
+    //     viewmatrix, 
+    //     projmatrix, 
+    //     width,
+    //     height,
+    //     focal_x, 
+    //     focal_y, 
+    //     tan_fovx, 
+    //     tan_fovy, 
+    //     campos, 
+    //     antialiasing
+    // ), debug);
 
     cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test<<<(N+255)/256, 256>>>(Ap, test_bool, N);
+    isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("Ax0 nan?: %d\n", h_bool);
 
 	// r(0) = b - A*x(0)
-    float* r;
-    cudaMalloc(&r, N * sizeof(float));
-    cudaMemset(r, 0, N * sizeof(float));
-    subtract<<<(N+255)/256, 256>>>(b, Ap, r, N);
+    double* r;
+    cudaMalloc(&r, N * sizeof(double));
+    cudaMemset(r, 0, N * sizeof(double));
+    subtract_d<<<(N+255)/256, 256>>>(b, Ap, r, N);
 
     cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test<<<(N+255)/256, 256>>>(r, test_bool, N);
+    isnan_test_d<<<(N+255)/256, 256>>>(r, test_bool, N);
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("r nan?: %d\n", h_bool);
 
 
     // calculate M = diag(J^T * J)
-	float* M_precon;
-    cudaMalloc(&M_precon, N * sizeof(float));
-    cudaMemset(M_precon, 0, N * sizeof(float));
+	double* M_precon;
+    cudaMalloc(&M_precon, N * sizeof(double));
+    cudaMemset(M_precon, 0, N * sizeof(double));
     diagJTJ<NUM_CHANNELS_3DGS><<<(num_cache_entries+255)/256, 256>>>(
         M_precon, 
 		cache, 
@@ -2028,30 +2037,30 @@ void GaussNewton::gaussNewtonUpdate(
     );
 
 	// z(0) = M^-1 * r(0)
-    float* z;
-    cudaMalloc(&z, N * sizeof(float));
-    next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+    double* z;
+    cudaMalloc(&z, N * sizeof(double));
+    next_z_d<<<(N+255)/256, 256>>>(M_precon, r, z, N);
 
 
     // p(0) = z(0)
-    float* p;
-    cudaMalloc(&p, N * sizeof(float));
-    cudaMemcpy(p, z, N * sizeof(float), cudaMemcpyDeviceToDevice);
+    double* p;
+    cudaMalloc(&p, N * sizeof(double));
+    cudaMemcpy(p, z, N * sizeof(double), cudaMemcpyDeviceToDevice);
 
     
     float eps = 1e-8;
-    float h_R;
-    float h_R_prev;
-    float* R;
-    float* R_prev;
+    double h_R;
+    double h_R_prev;
+    double* R;
+    double* R_prev;
     
-    cudaMalloc(&R, sizeof(float));
-    cudaMalloc(&R_prev, sizeof(float));
-    cudaMemset(R, 0, sizeof(float));
-    cudaMemset(R_prev, 0, sizeof(float));
+    cudaMalloc(&R, sizeof(double));
+    cudaMalloc(&R_prev, sizeof(double));
+    cudaMemset(R, 0, sizeof(double));
+    cudaMemset(R_prev, 0, sizeof(double));
 
 	// R_prev = r(0)^T * r(0)
-    dot<<<(N+255)/256, 256>>>(r, r, R_prev, N);
+    dot_d<<<(N+255)/256, 256>>>(r, r, R_prev, N);
     
     // float* alpha;
     // float* numerator;
@@ -2078,7 +2087,7 @@ void GaussNewton::gaussNewtonUpdate(
     
     int k = 0; 
     const int MAX_ITERATIONS = 10;
-    cudaMemcpy(&h_R_prev, R_prev, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_R_prev, R_prev, sizeof(double), cudaMemcpyDeviceToHost);
 
 	while(k < MAX_ITERATIONS){
 
@@ -2090,7 +2099,7 @@ void GaussNewton::gaussNewtonUpdate(
         cudaMemset(denominator, 0, sizeof(double));
         cudaMemset(numerator, 0, sizeof(double));
         cudaMemset(beta, 0, sizeof(double));
-        cudaMemset(Ap, 0, N * sizeof(float));
+        cudaMemset(Ap, 0, N * sizeof(double));
         
 		// r(k)^T * z(k)
         // dot<<<(N+255)/256, 256>>>(r, z, numerator, N);
@@ -2141,7 +2150,7 @@ void GaussNewton::gaussNewtonUpdate(
 		),debug);
 
         cudaMemset(test_bool, 0, sizeof(bool));
-        isnan_test<<<(N+255)/256, 256>>>(Ap, test_bool, N);
+        isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
         cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
         printf("Ap nan?: %d\n", h_bool);
         
@@ -2175,11 +2184,11 @@ void GaussNewton::gaussNewtonUpdate(
         next_r_d<<<(N+255)/256, 256>>>(r, Ap, alpha, N);
 
         // R = r(k+1)^T * r(k+1)
-        cudaMemset(R, 0, sizeof(float));
-        dot<<<(N+255)/256, 256>>>(r, r, R, N); 
+        cudaMemset(R, 0, sizeof(double));
+        dot_d<<<(N+255)/256, 256>>>(r, r, R, N); 
 
 		// Check if R/Rprev > 0.85 or R < eps
-        cudaMemcpy(&h_R, R, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_R, R, sizeof(double), cudaMemcpyDeviceToHost);
         printf("R_prev: %g, R: %g\n", h_R_prev, h_R);
 		printf("R/R_prev: %g \n", (h_R/ h_R_prev));
         if (h_R < eps || h_R/ h_R_prev > 0.85f){
@@ -2189,7 +2198,7 @@ void GaussNewton::gaussNewtonUpdate(
 		h_R_prev = h_R;
 
         // z(k+1) = M^-1 * r(k)
-        next_z<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+        next_z_d<<<(N+255)/256, 256>>>(M_precon, r, z, N);
         
         // r(k+1)^T * z(k+1)
         // cudaMemset(numerator, 0, sizeof(float));
