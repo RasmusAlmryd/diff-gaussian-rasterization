@@ -40,10 +40,11 @@ RasterizeGaussiansCUDA(
 	const bool antialiasing,
 	const int num_views,
 	const int view_index,
+	const bool GN_enable,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
- RasterizeGaussiansBackwardCUDA(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
 	const torch::Tensor& radii,
@@ -74,6 +75,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const bool antialiasing,
 	const int num_views,
 	const int view_index,
+	const bool GN_enabled,
+	torch::Tensor& cache,
+	torch::Tensor& cache_indices,
+	const uint32_t cache_offset,
 	const bool debug);
 		
 torch::Tensor markVisible(
@@ -238,8 +243,43 @@ struct Raster_settings {
 };
 
 
-void gaussNewtonUpdate(
+// void gaussNewtonUpdate(
 
+// 	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
+// 	const torch::Tensor &means3D,
+// 	const torch::Tensor &radii,
+// 	const torch::Tensor &dc,
+// 	const torch::Tensor &shs,
+// 	const torch::Tensor &clamped,
+// 	const torch::Tensor &opacities,
+// 	const torch::Tensor &scales,
+// 	const torch::Tensor &rotations,
+// 	const float scale_modifier,
+// 	const torch::Tensor cov3Ds,
+// 	const torch::Tensor conic_o,
+// 	const torch::Tensor& viewmatrix,
+//     const torch::Tensor& projmatrix,
+// 	const float tan_fovx, float tan_fovy,
+// 	const torch::Tensor &campos,
+//     bool antialiasing,
+// 	const int num_views,
+// 	// const std::vector<Raster_settings> &settings,
+
+    
+//     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
+//     torch::Tensor &sparse_J_values,
+//     torch::Tensor &sparse_J_indices,
+//     torch::Tensor &sparse_J_p_sum,
+// 	torch::Tensor &loss_residuals,
+//     float gamma,
+//     float alpha,
+//     torch::Tensor &tiles_touched,
+//     const uint32_t N, // number of parameters
+//     const uint32_t M,  // number of residuals
+//     const uint32_t sparse_J_entries
+// );
+
+void gaussNewtonUpdate(
 	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
 	const torch::Tensor &means3D,
 	const torch::Tensor &radii,
@@ -251,27 +291,23 @@ void gaussNewtonUpdate(
 	const torch::Tensor &rotations,
 	const float scale_modifier,
 	const torch::Tensor cov3Ds,
-	const torch::Tensor conic_o,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
 	const float tan_fovx, float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
-	const int num_views,
 	// const std::vector<Raster_settings> &settings,
-
-    
+	
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
-    torch::Tensor &sparse_J_values,
-    torch::Tensor &sparse_J_indices,
-    torch::Tensor &sparse_J_p_sum,
-	torch::Tensor &loss_residuals,
-    float gamma,
-    float alpha,
+    torch::Tensor &cache,
+    torch::Tensor &cache_indices,
+    const uint32_t num_cache_entries,
+	torch::Tensor &residuals,
     torch::Tensor &tiles_touched,
     const uint32_t N, // number of parameters
     const uint32_t M,  // number of residuals
-    const uint32_t sparse_J_entries
+	const uint32_t num_views, //Number of views that fit in memory
+	bool debug
 );
 
 

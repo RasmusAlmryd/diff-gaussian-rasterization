@@ -278,12 +278,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
-// Main rasterization method. Collaboratively works on one tile per
-// block, each thread treats one pixel. Alternates between fetching 
-// and rasterizing data.
+
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
-renderCUDA(
+renderCUDA_ADAM(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	const uint32_t* __restrict__ per_tile_bucket_offset, uint32_t* __restrict__ bucket_to_tile,
@@ -295,7 +293,6 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	uint32_t* __restrict__ max_contrib,
-	uint32_t* __restrict__ actual_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	const float* __restrict__ depths,
@@ -340,8 +337,6 @@ renderCUDA(
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
-	// uint32_t pix_id_check = 5000;
-	uint32_t actual_contributions = 0; 
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 	float expected_invdepth = 0.0f;
@@ -415,10 +410,202 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
-
-			actual_contributions++;
 		}
 	}
+
+	// All threads that treat valid pixel write out their final
+	// rendering data to the frame and auxiliary buffers.
+	if (inside)
+	{
+		final_T[pix_id] = T;
+		n_contrib[pix_id] = last_contributor;
+		for (int ch = 0; ch < CHANNELS; ch++)
+			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		invdepth[pix_id] = expected_invdepth;
+	}
+
+	// max reduce the last contributor
+    typedef cub::BlockReduce<uint32_t, BLOCK_SIZE> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+    last_contributor = BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
+	if (block.thread_rank() == 0) {
+		max_contrib[tile_id] = last_contributor;
+	}
+}
+
+
+// Main rasterization method. Collaboratively works on one tile per
+// block, each thread treats one pixel. Alternates between fetching 
+// and rasterizing data.
+template <uint32_t CHANNELS>
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+renderCUDA_GN(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	const uint32_t* __restrict__ per_tile_bucket_offset, uint32_t* __restrict__ bucket_to_tile,
+	float* __restrict__ sampled_T, float* __restrict__ sampled_ar, float* __restrict__ sampled_ard,
+	int W, int H,
+	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ features,
+	const float4* __restrict__ conic_opacity,
+	float* __restrict__ final_T,
+	uint32_t* __restrict__ n_contrib,
+	uint32_t* __restrict__ max_contrib,
+	uint32_t* __restrict__ actual_contrib,
+	uint32_t* gaussian_contrib,
+	const float* __restrict__ bg_color,
+	float* __restrict__ out_color,
+	const float* __restrict__ depths,
+	float* __restrict__ invdepth)
+{
+	// Identify current tile and associated min/max pixel range.
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	uint32_t pix_id = W * pix.y + pix.x;
+	float2 pixf = { (float)pix.x, (float)pix.y };
+
+	// Check if this thread is associated with a valid pixel or outside.
+	bool inside = pix.x < W&& pix.y < H;
+	// Done threads can help with fetching, but don't rasterize
+	bool done = !inside;
+
+	// Load start/end range of IDs to process in bit sorted list.
+	uint32_t tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
+	uint2 range = ranges[tile_id];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x;
+
+	// what is the number of buckets before me? what is my offset?
+	uint32_t bbm = tile_id == 0 ? 0 : per_tile_bucket_offset[tile_id - 1];
+	// let's first quickly also write the bucket-to-tile mapping
+	int num_buckets = (toDo + 31) / 32;
+	for (int i = 0; i < (num_buckets + BLOCK_SIZE - 1) / BLOCK_SIZE; ++i) {
+		int bucket_idx = i * BLOCK_SIZE + block.thread_rank();
+		if (bucket_idx < num_buckets) {
+			bucket_to_tile[bbm + bucket_idx] = tile_id;
+		}
+	}
+	
+	// Allocate storage for batches of collectively fetched data.
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+
+	// Initialize helper variables
+	float T = 1.0f;
+	uint32_t contributor = 0;
+	// uint32_t pix_id_check = 5000;
+	uint32_t actual_contributions = 0; 
+	uint32_t last_contributor = 0;
+	bool is_contributor = false; 
+	float C[CHANNELS] = { 0 };
+	float expected_invdepth = 0.0f;
+
+	// Iterate over batches until all done or range is complete
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		// End if entire block votes that it is done rasterizing
+		int num_done = __syncthreads_count(done);
+		if (num_done == BLOCK_SIZE)
+			break;
+
+		// Collectively fetch per-Gaussian data from global to shared
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+		}
+		block.sync();
+
+		// Iterate over current batch
+		for (int j = 0; j < min(BLOCK_SIZE, toDo); j++)
+		{
+			bool stop = false;
+			is_contributor = false;
+			// add incoming T value for every 32nd gaussian
+			if (j % 32 == 0) {
+				sampled_T[(bbm * BLOCK_SIZE) + block.thread_rank()] = T;
+				for (int ch = 0; ch < CHANNELS; ++ch) {
+					sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = C[ch];
+				}
+				sampled_ard[(bbm * BLOCK_SIZE) + block.thread_rank()] = expected_invdepth;
+				++bbm;
+			}
+
+			// Keep track of current position in range
+			if(!done) {
+				contributor++;
+			}else{
+				stop = true;
+			}
+
+			// Resample using conic matrix (cf. "Surface 
+			// Splatting" by Zwicker et al., 2001)
+			float2 xy = collected_xy[j];
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			float4 con_o = collected_conic_opacity[j];
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			if (power > 0.0f){
+				stop = true;
+				// continue;
+			}
+
+			// Eq. (2) from 3D Gaussian splatting paper.
+			// Obtain alpha by multiplying with Gaussian opacity
+			// and its exponential falloff from mean.
+			// Avoid numerical instabilities (see paper appendix). 
+			float alpha = min(0.99f, con_o.w * exp(power));
+			if (alpha < 1.0f / 255.0f){
+				stop = true;
+				// continue;
+			}
+
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f)
+			{
+				done = true;
+				stop = true;
+				// continue;
+			}
+
+			if(!stop){
+				// Eq. (3) from 3D Gaussian splatting paper.
+				for (int ch = 0; ch < CHANNELS; ch++)
+					C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+	
+				expected_invdepth += (1.f / depths[collected_id[j]]) * alpha * T;
+	
+				T = test_T;
+	
+				// Keep track of last range entry to update this
+				// pixel.
+				last_contributor = contributor;
+	
+				actual_contributions++;
+	
+				is_contributor = true;
+			}
+
+			// Count number of pixels a particular gaussian contributes to 
+			int num_gaussian_contributions = __syncthreads_count(is_contributor);
+			if (block.thread_rank() == 0) {
+				int duplicate_gaussian_id = range.x + i * BLOCK_SIZE + j;
+				// printf("id: %d, contrib: %d \n", duplicate_gaussian_id, num_gaussian_contributions);
+				gaussian_contrib[duplicate_gaussian_id] = num_gaussian_contributions;
+			}
+
+		}
+	}
+
+	// if(tile_id == 968){
+	// 	printf("FORWARD: thread rank: %d,  x: %d, y: %d, last contributor: %d \n", block.thread_rank(), threadIdx.x , threadIdx.y , last_contributor);
+	// }
 
 	// atomicAdd(count, actual_contrib);
 	// atomicAdd(bad_count, last_contributor);
@@ -441,12 +628,27 @@ renderCUDA(
 	}
 
 	// max reduce the last contributor
+	// __syncthreads();
     typedef cub::BlockReduce<uint32_t, BLOCK_SIZE> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
-    last_contributor = BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
-	if (block.thread_rank() == 0) {
-		max_contrib[tile_id] = last_contributor;
+    uint32_t aggregate = BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
+
+	// typedef cub::BlockReduce<uint32_t, BLOCK_X, cub::BLOCK_REDUCE_RAKING, BLOCK_Y> BlockReduce;
+    // __shared__ typename BlockReduce::TempStorage temp_storage;
+    // uint32_t aggregate = BlockReduce(temp_storage).Reduce(last_contributor, cub::Max());
+
+	// __syncthreads();
+	if (threadIdx.x == 0 && threadIdx.y == 0) {
+		max_contrib[tile_id] = aggregate;
+		
 	}
+	
+	// if(tile_id == 968){
+	// 	printf("FORWARD: thread rank: %d, x: %d, y: %d, last/max contributor: %d, aggregate: %d \n", block.thread_rank(), threadIdx.x , threadIdx.y, last_contributor, aggregate);
+	// }
+	// if(tile_id == 968){
+	// 	printf("FORWARD: last/max contributor: %d \n", last_contributor);
+	// }
 }
 
 
@@ -464,29 +666,52 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	uint32_t* max_contrib,
 	uint32_t* actual_contrib,
+	uint32_t* gaussian_contrib,
 	const float* bg_color,
 	float* out_color,
 	float* depths,
-	float* depth)
+	float* depth,
+	bool GN_enabled)
 {
 
-	renderCUDA<NUM_CHANNELS_3DGS> << <grid, block >> > (
-		ranges,
-		point_list,
-		per_tile_bucket_offset, bucket_to_tile,
-		sampled_T, sampled_ar, sampled_ard,
-		W, H,
-		means2D,
-		colors,
-		conic_opacity,
-		final_T,
-		n_contrib,
-		max_contrib,
-		actual_contrib,
-		bg_color,
-		out_color,
-		depths,
-		depth);
+	if(GN_enabled){
+		renderCUDA_GN<NUM_CHANNELS_3DGS> << <grid, block >> > (
+			ranges,
+			point_list,
+			per_tile_bucket_offset, bucket_to_tile,
+			sampled_T, sampled_ar, sampled_ard,
+			W, H,
+			means2D,
+			colors,
+			conic_opacity,
+			final_T,
+			n_contrib,
+			max_contrib,
+			actual_contrib,
+			gaussian_contrib,
+			bg_color,
+			out_color,
+			depths,
+			depth);
+
+	}else{
+		renderCUDA_ADAM<NUM_CHANNELS_3DGS> << <grid, block >> > (
+			ranges,
+			point_list,
+			per_tile_bucket_offset, bucket_to_tile,
+			sampled_T, sampled_ar, sampled_ard,
+			W, H,
+			means2D,
+			colors,
+			conic_opacity,
+			final_T,
+			n_contrib,
+			max_contrib,
+			bg_color,
+			out_color,
+			depths,
+			depth);
+	}
 
 
 }

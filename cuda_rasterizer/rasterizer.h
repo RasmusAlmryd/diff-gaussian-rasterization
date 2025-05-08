@@ -59,6 +59,7 @@ namespace CudaRasterizer
 			bool antialiasing,
 			int* radii = nullptr,
 			bool* clamped = nullptr,
+			bool GN_enabled = false,
 			bool debug = false);
 
 		static void backward(
@@ -105,6 +106,7 @@ namespace CudaRasterizer
 			bool antialiasing,
 			const int num_views,
 			const int view_index,
+			bool GN_enabled,
 			bool debug);
 	};
 };

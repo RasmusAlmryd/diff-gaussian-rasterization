@@ -827,7 +827,8 @@ void test_delta_residuals(
 
     bool done = false;
     
-    const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    // const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+    const float2 d = { 0.1f, 0.1f };
     const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
     if (power > 0.0f) return;
     const float G = exp(power);
@@ -898,8 +899,24 @@ void test_delta_residuals(
     atomicAdd(&b[15 + x * num_params_per_gauss + 17], ((glm::vec4*)rotations)[x].y);
     atomicAdd(&b[15 + x * num_params_per_gauss + 18], ((glm::vec4*)rotations)[x].z);
     atomicAdd(&b[15 + x * num_params_per_gauss + 19], ((glm::vec4*)rotations)[x].w);
-    b[15 + x * num_params_per_gauss + 20] = J[0 *13 + 5];
-    b[15 + x * num_params_per_gauss + 21] = J[0 *13 + 6];
+    atomicAdd(&b[15 + x * num_params_per_gauss + 20], power);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 21], T);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 22], ar[0]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 23], ar[1]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 24], ar[2]);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 25], con_o.x);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 26], con_o.y);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 27], con_o.z);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 28], con_o.w);
+
+    con_o = { conic_opacity[0], conic_opacity[1], conic_opacity[2], conic_opacity[3] };
+    atomicAdd(&b[15 + x * num_params_per_gauss + 29], con_o.x);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 30], con_o.y);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 31], con_o.z);
+    atomicAdd(&b[15 + x * num_params_per_gauss + 32], con_o.w);
+
+    // b[15 + x * num_params_per_gauss + 20] = J[0 *13 + 5];
+    // b[15 + x * num_params_per_gauss + 21] = J[0 *13 + 6];
     // atomicAdd(&b[15 + x * num_params_per_gauss + 22], contributor);
 
 
@@ -3041,14 +3058,14 @@ void GaussNewton::gaussNewtonUpdate(
 
     printf("D: %d \n", D);
 
-    for(int i = 0; i < num_views; i++){
-        for(int j = 0; j < 4*4; j++){
-            cudaMemcpy(&h_float, &viewmatrix[i * (4*4) + j], sizeof(float), cudaMemcpyDeviceToHost);
-            printf("%f, ",h_float);
-            if((j+1) % 4 == 0)
-                printf("\n");
-        }
-    }
+    // for(int i = 0; i < num_views; i++){
+    //     for(int j = 0; j < 4*4; j++){
+    //         cudaMemcpy(&h_float, &viewmatrix[i * (4*4) + j], sizeof(float), cudaMemcpyDeviceToHost);
+    //         printf("%f, ",h_float);
+    //         if((j+1) % 4 == 0)
+    //             printf("\n");
+    //     }
+    // }
     // printf("%f, \");
     // for(int i = 0; i < num_views; i++){
     //     for(int j = 0; j < 4*4; j++){
@@ -3110,7 +3127,8 @@ void GaussNewton::gaussNewtonUpdate(
     //     printf("b/residual delta(%d): %f  | %s \n",i, h_float, get_param_name(i%59));
     // }
 
-    // return;
+    // // return;
+    // cudaMemset(b,0, N * sizeof(float));
 
 
     calc_b_non_sparse<NUM_CHANNELS_3DGS><<<(P*M*num_views+255)/256, 256>>>(

@@ -49,7 +49,8 @@ namespace BACKWARD
 		float* dr_dxs,
 		uint64_t* residual_index,
 		const int num_views,
-		const int view_index
+		const int view_index,
+		bool GN_enabled
 	);
 
 	void preprocess(

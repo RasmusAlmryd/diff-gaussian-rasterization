@@ -25,12 +25,12 @@ setup(
             "cuda_rasterizer/forward.cu",
             "cuda_rasterizer/backward.cu",
             "cuda_rasterizer/adam.cu",
-            "cuda_rasterizer/gauss_newton.cu",
+            "cuda_rasterizer/gauss_newton_sparse.cu", # "cuda_rasterizer/gauss_newton.cu",
             "cuda_rasterizer/gauss_newton_simple.cu",
             "rasterize_points.cu",
             "conv.cu",
             "ext.cpp"],
-            extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
+            extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]}) #"-G","-lineinfo", 
         ],
     cmdclass={
         'build_ext': BuildExtension

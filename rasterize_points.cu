@@ -23,7 +23,7 @@
 #include "cuda_rasterizer/config.h"
 #include "cuda_rasterizer/rasterizer.h"
 #include "cuda_rasterizer/adam.h"
-#include "cuda_rasterizer/gauss_newton.h"
+#include "cuda_rasterizer/gauss_newton_sparse.h"
 #include "cuda_rasterizer/gauss_newton_simple.h"
 #include "rasterize_points.h"
 #include <fstream>
@@ -191,6 +191,7 @@ RasterizeGaussiansCUDA(
 	const bool antialiasing,
 	const int num_views,
 	const int view_index,
+	const bool GN_enabled,
 	const bool debug)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
@@ -264,6 +265,7 @@ RasterizeGaussiansCUDA(
 		antialiasing,
 		radii.contiguous().data<int>(),
 		clamped.contiguous().data<bool>(),
+		GN_enabled,
 		debug);
 		
 		rendered = std::get<0>(tup);
@@ -273,7 +275,7 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, num_residuals, num_buckets, out_color, out_invdepth, radii, clamped, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, residualBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -305,40 +307,74 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const bool antialiasing,
 	const int num_views,
 	const int view_index,
+	const bool GN_enabled,
+	torch::Tensor& cache,
+	torch::Tensor& cache_indices,
+	const uint32_t cache_offset,
 	const bool debug) 
 {
-  const int P = means3D.size(0);
-  const int H = dL_dout_color.size(1);
-  const int W = dL_dout_color.size(2);
-  
-  int M = 0;
-  if(sh.size(0) != 0)
-  {	
-	M = sh.size(1);
-  }
+	const int P = means3D.size(0);
+	const int H = dL_dout_color.size(1);
+	const int W = dL_dout_color.size(2);
 
-  torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS_3DGS}, means3D.options());
-  torch::Tensor dL_dinvdepths = torch::zeros({P, 1}, means3D.options());
-  torch::Tensor dL_dconic = torch::zeros({P, 2, 2}, means3D.options());
-  torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
-  torch::Tensor dL_dcov3D = torch::zeros({P, 6}, means3D.options());
-  torch::Tensor dL_ddc = torch::zeros({P, 1, 3}, means3D.options());
-  torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
-  torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
-  torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options()); // quats {P, 3, 3}
+	int M = 0;
+	if(sh.size(0) != 0)
+	{	
+		M = sh.size(1);
+	}
 
-  int num_images = num_views;
+	torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
+	torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
+	torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS_3DGS}, means3D.options());
+	torch::Tensor dL_dinvdepths = torch::zeros({P, 1}, means3D.options());
+	torch::Tensor dL_dconic = torch::zeros({P, 2, 2}, means3D.options());
+	torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
+	torch::Tensor dL_dcov3D = torch::zeros({P, 6}, means3D.options());
+	torch::Tensor dL_ddc = torch::zeros({P, 1, 3}, means3D.options());
+	torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
+	torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
+	torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options()); // quats {P, 3, 3}
 
-  torch::Tensor dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options()); //accessed in right order?
-  torch::Tensor residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
-  torch::Tensor p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
-  torch::Tensor cov3D = torch::zeros({P, 6}, means3D.options());
-  torch::Tensor conic_o = torch::zeros({P, 4}, means3D.options());
+	int num_images = num_views;
+	// torch::Tensor dr_dxs;
+	// torch::Tensor residual_index;
+	torch::Tensor p_sum;
+	torch::Tensor cov3D;
+	torch::Tensor conic_o;
 
-  if(P != 0)
-  {  
+	
+
+	// uint32_t bytes_per_cache_entry = 4 * 4 + 8;
+	// uint32_t cache_values_size = (4*4 / (float)bytes_per_cache_entry ) * cache_byte_limit;
+	// uint32_t cache_indicies_size = (8 / (float)bytes_per_cache_entry ) * cache_byte_limit;
+
+	if(GN_enabled){
+		// dr_dxs = torch::zeros({P, H, W , 13, num_images}, means3D.options()); //accessed in right order? // allocate 2MB
+		// dr_dxs = torch::zeros({K, 4}, means3D.options()); //accessed in right order? // allocate 2MB
+		// residual_index = torch::zeros({K,num_images}, means3D.options().dtype(torch::kUInt64));
+		// residual_index = torch::zeros({K}, means3D.options().dtype(torch::kUInt64));
+
+		p_sum = torch::zeros({P,num_images}, means3D.options().dtype(torch::kUInt32));
+		cov3D = torch::zeros({P, 6}, means3D.options());
+		conic_o = torch::zeros({P, 4}, means3D.options());
+	}else{
+		// dr_dxs = torch::zeros({0}, means3D.options()); //accessed in right order?
+		// residual_index = torch::zeros({0}, means3D.options().dtype(torch::kUInt64));
+		p_sum = torch::zeros({0}, means3D.options().dtype(torch::kUInt32));
+		cov3D = torch::zeros({0}, means3D.options());
+		conic_o = torch::zeros({0}, means3D.options());
+	}
+
+	float* cache_ptr = nullptr;
+	uint64_t* cache_indices_ptr = nullptr;
+
+	if(GN_enabled){
+		cache_ptr = cache.contiguous().data<float>() + cache_offset * 4; 
+		cache_indices_ptr = cache_indices.contiguous().data<uint64_t>() + cache_offset; 
+	}
+
+	if(P != 0)
+	{  
 	CudaRasterizer::Rasterizer::backward(P, degree, M, R, B, K,
 		background.contiguous().data<float>(),
 		W, H, 
@@ -375,18 +411,19 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 		dL_dsh.contiguous().data<float>(),
 		dL_dscales.contiguous().data<float>(),
 		dL_drotations.contiguous().data<float>(),
-		dr_dxs.contiguous().data<float>(),
-		residual_index.contiguous().data<uint64_t>(),
+		cache_ptr,  //dr_dxs.contiguous().data<float>(),
+		cache_indices_ptr,	//residual_index.contiguous().data<uint64_t>(),
 		p_sum.contiguous().data<uint32_t>(),
 		cov3D.contiguous().data<float>(),
 		conic_o.contiguous().data<float>(),
 		antialiasing,
 		num_views,
 		view_index,
+		GN_enabled,
 		debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, dr_dxs, residual_index, p_sum, cov3D, conic_o);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations, cov3D);
 }
 
 torch::Tensor markVisible(
@@ -437,6 +474,103 @@ void adamUpdate(
 		M);
 }
 
+// void gaussNewtonUpdate(
+// 	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
+// 	const torch::Tensor &means3D,
+// 	const torch::Tensor &radii,
+// 	const torch::Tensor &dc,
+// 	const torch::Tensor &shs,
+// 	const torch::Tensor &clamped,
+// 	const torch::Tensor &opacities,
+// 	const torch::Tensor &scales,
+// 	const torch::Tensor &rotations,
+// 	const float scale_modifier,
+// 	const torch::Tensor cov3Ds,
+// 	const torch::Tensor conic_o,
+// 	const torch::Tensor& viewmatrix,
+//     const torch::Tensor& projmatrix,
+// 	const float tan_fovx, float tan_fovy,
+// 	const torch::Tensor &campos,
+//     bool antialiasing,
+// 	const int num_views,
+// 	// const std::vector<Raster_settings> &settings,
+
+//     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
+//     torch::Tensor &sparse_J_values,
+//     torch::Tensor &sparse_J_indices,
+//     torch::Tensor &sparse_J_p_sum,
+// 	torch::Tensor &loss_residuals,
+//     float gamma,
+//     float alpha,
+//     torch::Tensor &tiles_touched,
+//     const uint32_t N, // number of parameters
+//     const uint32_t M,  // number of residuals
+//     const uint32_t sparse_J_entries
+// ){
+
+// 	// for(Raster_settings r: settings){
+// 	// 	printf("width: %d, height: %d\n", r.image_width, r.image_height);
+// 	// }
+
+// 	// std::vector<GaussNewton::raster_settings> GN_settings;
+//     // for(Raster_settings r: settings){
+//     //     GaussNewton::raster_settings s;
+//     //     s.image_height = r.image_height;
+//     //     s.image_width = r.image_width;
+//     //     s.tanfovx = r.tanfovx;
+//     //     s.tanfovy = r.tanfovy;
+//     //     s.bg = r.bg.contiguous().data<float>();
+//     //     s.scale_modifier = r.scale_modifier;
+//     //     s.viewmatrix = r.viewmatrix.contiguous().data<float>();
+//     //     s.projmatrix = r.projmatrix.contiguous().data<float>();
+//     //     s.sh_degree = r.sh_degree;
+//     //     s.campos = r.campos.contiguous().data<float>();
+//     //     s.prefiltered = r.prefiltered;
+//     //     s.debug = r.debug;
+//     //     s.antialiasing = r.antialiasing;
+//     //     s.num_views = r.num_views;
+//     //     s.view_index = r.view_index;
+//     //     GN_settings.push_back(s);
+//     // }
+
+// 	// return;
+// 	GaussNewton::gaussNewtonUpdate(
+// 		P, D, max_coeffs, width, height, // max_coeffs = M
+// 		means3D.contiguous().data<float>(),
+// 		radii.contiguous().data<int>(),
+// 		dc.contiguous().data<float>(),
+// 		shs.contiguous().data<float>(),
+// 		clamped.contiguous().data<bool>(),
+// 		opacities.contiguous().data<float>(),
+// 		scales.contiguous().data<float>(),
+// 		rotations.contiguous().data<float>(),
+// 		scale_modifier,
+// 		cov3Ds.contiguous().data<float>(),
+// 		conic_o.contiguous().data<float>(),
+// 		viewmatrix.contiguous().data<float>(),
+// 		projmatrix.contiguous().data<float>(),
+// 		tan_fovx, tan_fovy,
+// 		campos.contiguous().data<float>(),
+// 		antialiasing,
+// 		// GN_settings.data(),
+// 		// GN_settings.size(),
+// 		num_views,
+
+// 		x.contiguous().data<float>(), 
+// 		sparse_J_values.contiguous().data<float>(),
+// 		sparse_J_indices.contiguous().data<uint64_t>(),
+// 		sparse_J_p_sum.contiguous().data<uint32_t>(),
+// 		loss_residuals.contiguous().data<float>(),
+// 		gamma,
+// 		alpha,
+// 		tiles_touched.contiguous().data<bool>(),
+// 		N, 
+// 		M, 
+// 		sparse_J_entries);
+
+	
+// }
+
 void gaussNewtonUpdate(
 	int P, int D, int max_coeffs, int width, int height, // max_coeffs = M
 	const torch::Tensor &means3D,
@@ -449,54 +583,24 @@ void gaussNewtonUpdate(
 	const torch::Tensor &rotations,
 	const float scale_modifier,
 	const torch::Tensor cov3Ds,
-	const torch::Tensor conic_o,
 	const torch::Tensor& viewmatrix,
     const torch::Tensor& projmatrix,
-	const float tan_fovx, float tan_fovy,
+	const float tan_fovx, const float tan_fovy,
 	const torch::Tensor &campos,
     bool antialiasing,
-	const int num_views,
 	// const std::vector<Raster_settings> &settings,
-
+	
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
-    torch::Tensor &sparse_J_values,
-    torch::Tensor &sparse_J_indices,
-    torch::Tensor &sparse_J_p_sum,
-	torch::Tensor &loss_residuals,
-    float gamma,
-    float alpha,
+    torch::Tensor &cache,
+    torch::Tensor &cache_indices,
+    const uint32_t num_cache_entries,
+	torch::Tensor &residuals,
     torch::Tensor &tiles_touched,
     const uint32_t N, // number of parameters
     const uint32_t M,  // number of residuals
-    const uint32_t sparse_J_entries
+	const uint32_t num_views, //Number of views that fit in memory
+	bool debug
 ){
-
-	// for(Raster_settings r: settings){
-	// 	printf("width: %d, height: %d\n", r.image_width, r.image_height);
-	// }
-
-	// std::vector<GaussNewton::raster_settings> GN_settings;
-    // for(Raster_settings r: settings){
-    //     GaussNewton::raster_settings s;
-    //     s.image_height = r.image_height;
-    //     s.image_width = r.image_width;
-    //     s.tanfovx = r.tanfovx;
-    //     s.tanfovy = r.tanfovy;
-    //     s.bg = r.bg.contiguous().data<float>();
-    //     s.scale_modifier = r.scale_modifier;
-    //     s.viewmatrix = r.viewmatrix.contiguous().data<float>();
-    //     s.projmatrix = r.projmatrix.contiguous().data<float>();
-    //     s.sh_degree = r.sh_degree;
-    //     s.campos = r.campos.contiguous().data<float>();
-    //     s.prefiltered = r.prefiltered;
-    //     s.debug = r.debug;
-    //     s.antialiasing = r.antialiasing;
-    //     s.num_views = r.num_views;
-    //     s.view_index = r.view_index;
-    //     GN_settings.push_back(s);
-    // }
-
-	// return;
 	GaussNewton::gaussNewtonUpdate(
 		P, D, max_coeffs, width, height, // max_coeffs = M
 		means3D.contiguous().data<float>(),
@@ -509,27 +613,23 @@ void gaussNewtonUpdate(
 		rotations.contiguous().data<float>(),
 		scale_modifier,
 		cov3Ds.contiguous().data<float>(),
-		conic_o.contiguous().data<float>(),
 		viewmatrix.contiguous().data<float>(),
 		projmatrix.contiguous().data<float>(),
 		tan_fovx, tan_fovy,
 		campos.contiguous().data<float>(),
 		antialiasing,
-		// GN_settings.data(),
-		// GN_settings.size(),
-		num_views,
-
+		
 		x.contiguous().data<float>(), 
-		sparse_J_values.contiguous().data<float>(),
-		sparse_J_indices.contiguous().data<uint64_t>(),
-		sparse_J_p_sum.contiguous().data<uint32_t>(),
-		loss_residuals.contiguous().data<float>(),
-		gamma,
-		alpha,
+		cache.contiguous().data<float>(),
+		cache_indices.contiguous().data<uint64_t>(),
+		num_cache_entries,
+		residuals.contiguous().data<float>(),
 		tiles_touched.contiguous().data<bool>(),
 		N, 
 		M, 
-		sparse_J_entries);
+		num_views,
+		debug
+    );
 }
 
 void gaussNewtonUpdateSimple(
