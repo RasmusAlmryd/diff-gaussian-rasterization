@@ -591,6 +591,7 @@ void gaussNewtonUpdate(
 	// const std::vector<Raster_settings> &settings,
 	
     torch::Tensor &x,   // Is named delta in init.py : Check argument position.
+	torch::Tensor &preconditioner,
     torch::Tensor &cache,
     torch::Tensor &cache_indices,
     const uint32_t num_cache_entries,
@@ -620,6 +621,7 @@ void gaussNewtonUpdate(
 		antialiasing,
 		
 		x.contiguous().data<float>(), 
+		preconditioner.contiguous().data<double>(),
 		cache.contiguous().data<float>(),
 		cache_indices.contiguous().data<uint64_t>(),
 		num_cache_entries,

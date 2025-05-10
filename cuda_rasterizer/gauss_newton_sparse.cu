@@ -1846,6 +1846,7 @@ void GaussNewton::gaussNewtonUpdate(
     bool antialiasing,
     
     float* x,   // Is named delta in init.py : Check argument position.
+    double* preconditioner,
     const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
     const uint64_t* cache_indices,
     const uint32_t num_cache_entries, // Number of non zero values
@@ -1922,15 +1923,15 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("b nan?: %d\n", h_bool);
 
-    // float h_float;
-    // for(int i = 0; i < N; i++){
-    //     cudaMemcpy(&h_float, &b[i], sizeof(float), cudaMemcpyDeviceToHost);
-    //     printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
-    //     if(i % 59 == 11){
-    //         i = 59 * (i/59) + 58;
-    //         printf("\n");
-    //     }
-    // }
+    double h_float;
+    for(int i = 0; i < N; i++){
+        cudaMemcpy(&h_float, &b[i], sizeof(double), cudaMemcpyDeviceToHost);
+        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+        if(i % 59 == 11){
+            i = 59 * (i/59) + 58;
+            printf("\n");
+        }
+    }
 
 	double* check_b;
     double h_check_b;
@@ -2000,11 +2001,11 @@ void GaussNewton::gaussNewtonUpdate(
 
 
     // calculate M = diag(J^T * J)
-	double* M_precon;
-    cudaMalloc(&M_precon, N * sizeof(double));
-    cudaMemset(M_precon, 0, N * sizeof(double));
+	//double* preconditioner;
+    //cudaMalloc(&M_precon, N * sizeof(double));
+    //cudaMemset(M_precon, 0, N * sizeof(double));
     diagJTJ<NUM_CHANNELS_3DGS><<<(num_cache_entries+255)/256, 256>>>(
-        M_precon, 
+        preconditioner, 
 		cache, 
 		cache_indices,
 		num_cache_entries,
@@ -2039,7 +2040,7 @@ void GaussNewton::gaussNewtonUpdate(
 	// z(0) = M^-1 * r(0)
     double* z;
     cudaMalloc(&z, N * sizeof(double));
-    next_z_d<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+    next_z_d<<<(N+255)/256, 256>>>(preconditioner, r, z, N);
 
 
     // p(0) = z(0)
@@ -2198,7 +2199,7 @@ void GaussNewton::gaussNewtonUpdate(
 		h_R_prev = h_R;
 
         // z(k+1) = M^-1 * r(k)
-        next_z_d<<<(N+255)/256, 256>>>(M_precon, r, z, N);
+        next_z_d<<<(N+255)/256, 256>>>(preconditioner, r, z, N);
         
         // r(k+1)^T * z(k+1)
         // cudaMemset(numerator, 0, sizeof(float));
@@ -2224,7 +2225,7 @@ void GaussNewton::gaussNewtonUpdate(
     cudaFree(denominator);
     cudaFree(alpha);
     cudaFree(beta);
-    cudaFree(M_precon);
+    //cudaFree(M_precon);
     cudaFree(b);
     cudaFree(r);
     cudaFree(z);

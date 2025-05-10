@@ -28,7 +28,8 @@ namespace GaussNewton {
         const float* campos,
         bool antialiasing,
         
-        float* x,   // Is named delta in init.py : Check argument position.
+        float* x, // Is named delta in init.py : Check argument position.
+        double* preconditioner, 
         const float* cache, // cached values for gradient calculations (T, ar[3], contributes)
         const uint64_t* cache_indices,
         const uint32_t num_cache_entries, // Number of non 

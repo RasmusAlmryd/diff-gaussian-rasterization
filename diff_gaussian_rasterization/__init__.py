@@ -15,6 +15,7 @@
 from typing import NamedTuple
 import torch.nn as nn
 import torch
+import random
 from . import _C
 from torch.optim.optimizer import Optimizer
 from dataclasses import dataclass
@@ -200,7 +201,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
         if(raster_settings.GN_enabled):
             if(raster_settings.view_index == 0):
-                sparse_J.raster_settings.clear()
+                #sparse_J.raster_settings.clear()
                 # sparse_J.values.clear()
                 # sparse_J.indices.clear()
                 sparse_J.num_entries = 0
@@ -377,11 +378,289 @@ class SparseGaussianAdam(torch.optim.Adam):
 class GaussNewton(Optimizer):
     def __init__(self, params, step_alpha=0.7, step_gamma=1, sparse_jacobian: SparseJacobianData = None):
         assert sparse_jacobian is not None
-        defaults = dict(step_alpha=step_alpha, step_gamma=step_gamma, sparse_jacobian=sparse_jacobian )
+        defaults = dict(step_alpha=step_alpha, step_gamma=step_gamma, sparse_jacobian=sparse_jacobian, step_vectors=[], precon_vectors=[] )
         super(GaussNewton, self).__init__(params=params, defaults=defaults)
 
     @torch.no_grad()
-    def step(self, visibility, view_residuals, view_radii, gaussian_model, iteration, gt_images, achieved_num_views, cache, cache_indices):
+    def precompute_batch(self, visibility, view_residuals, view_radii, gaussian_model, iteration, gt_images, achieved_num_views, cache, cache_indices, batch_index):
+        step_vectors = self.defaults['step_vectors']
+        precon_vectors = self.defaults['precon_vectors']
+        sparse_jacobian = self.defaults['sparse_jacobian']
+
+        means3D_group = self.find_parameter_group('xyz')
+        scales_group  = self.find_parameter_group('scaling')
+        rotations_group = self.find_parameter_group('rotation')
+        opacities_group = self.find_parameter_group('opacity')
+        f_dc_group = self.find_parameter_group('f_dc')
+        f_rest_group = self.find_parameter_group('f_rest')
+
+        means3D = means3D_group['params'][0].detach()
+        scales  = torch.exp(scales_group['params'][0].detach())
+        rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
+        # rotations = rotations_group['params'][0].detach()
+        opacities = torch.sigmoid(opacities_group['params'][0].detach())
+        f_dc = f_dc_group['params'][0].detach()
+        f_rest = f_rest_group['params'][0].detach()
+
+        param_grads = []
+        N = 0 # number of parameters
+        M = sparse_jacobian.num_residuals # number of residuals 
+        for group in self.param_groups:
+            # print(f'Opt.step: param: {group["name"]}, size: {group["params"][0].shape}')
+            assert len(group["params"]) == 1, "more than one tensor in group"
+            param = group["params"][0]
+            if param.grad is None:
+                continue
+
+            state = self.state[param]
+            if len(state) == 0:
+                state['step'] = torch.tensor(0.0, dtype=torch.float32)
+                state['exp_avg'] = torch.zeros_like(param, memory_format=torch.preserve_format)
+                state['exp_avg_sq'] = torch.zeros_like(param, memory_format=torch.preserve_format)
+                
+
+
+            # param_grads.append(param.grad.flatten())
+            N += param.numel()
+
+        if N == 0:
+            return
+
+        view_residuals = torch.stack(view_residuals, dim=0)
+        view_radii = torch.stack(view_radii, dim=0)
+
+        delta = torch.zeros(N, dtype=torch.float32, device=torch.device('cuda'))
+        preconditioner = torch.zeros(N, dtype=torch.double, device=torch.device('cuda'))
+
+        view_matrices = []
+        proj_matrices = []
+        campos = []
+        num_views = achieved_num_views
+        for view_index in range(num_views):
+            offset_idx = batch_index * num_views + view_index
+            view_matrices.append(sparse_jacobian.raster_settings[offset_idx].viewmatrix)
+            proj_matrices.append(sparse_jacobian.raster_settings[offset_idx].projmatrix)
+            campos.append( sparse_jacobian.raster_settings[offset_idx].campos)
+
+        view_matrices = torch.stack(view_matrices, dim=0)
+        proj_matrices = torch.stack(proj_matrices, dim=0)
+        campos = torch.stack(campos, dim=0)
+    
+        max_coeffs= 0
+        if(f_rest.size(0) != 0):
+            max_coeffs = f_rest.size(1)
+
+        P = means3D.size(0)
+        D = sparse_jacobian.raster_settings[0].sh_degree
+        width = sparse_jacobian.raster_settings[0].image_width
+        height = sparse_jacobian.raster_settings[0].image_height
+
+        _C.gaussNewtonUpdate(
+            P, D, max_coeffs, width, height, # max_coeffs = M
+            means3D,
+            view_radii,
+            f_dc,
+            f_rest,
+            sparse_jacobian.clamped,
+            opacities,
+            scales, 
+            rotations,
+            sparse_jacobian.raster_settings[0].scale_modifier,
+            sparse_jacobian.cov3D,
+            view_matrices, #sparse_jacobian.raster_settings[0].viewmatrix,
+            proj_matrices, #sparse_jacobian.raster_settings[0].projmatrix,
+            sparse_jacobian.raster_settings[0].tanfovx, 
+            sparse_jacobian.raster_settings[0].tanfovy,
+            campos, #sparse_jacobian.raster_settings[0].campos, 
+            sparse_jacobian.raster_settings[0].antialiasing,
+
+            delta,
+            preconditioner, 
+            cache, 
+            cache_indices, 
+            sparse_jacobian.num_entries,
+            view_residuals, 
+            visibility, 
+            N, 
+            M, 
+            num_views,
+            sparse_jacobian.raster_settings[0].debug)
+        step_vectors.append(delta)
+        precon_vectors.append(preconditioner)
+        print('delta', delta)
+        print('precon', preconditioner)
+        self.__clear_batch()
+
+    def __clear_batch(self):
+        sparse_jacobian = self.defaults['sparse_jacobian']
+
+        sparse_jacobian.num_entries = 0
+        sparse_jacobian.num_gaussians = 0
+        sparse_jacobian.num_residuals = 0
+
+    def __clear_iteration(self):
+        sparse_jacobian = self.defaults['sparse_jacobian']
+
+        sparse_jacobian.raster_settings.clear()
+
+    @torch.no_grad()
+    def step(self, num_batches, num_views_per_batch, gt_images, linesearch_rendered = 1.0):
+        step_vectors = self.defaults['step_vectors']
+        precon_vectors = self.defaults['precon_vectors']
+        sparse_jacobian = self.defaults['sparse_jacobian']
+
+        means3D_group = self.find_parameter_group('xyz')
+        scales_group  = self.find_parameter_group('scaling')
+        rotations_group = self.find_parameter_group('rotation')
+        opacities_group = self.find_parameter_group('opacity')
+        f_dc_group = self.find_parameter_group('f_dc')
+        f_rest_group = self.find_parameter_group('f_rest')
+
+
+        means3D = means3D_group['params'][0].detach()
+        scales  = torch.exp(scales_group['params'][0].detach())
+        rotations = torch.nn.functional.normalize(rotations_group['params'][0].detach())
+        # rotations = rotations_group['params'][0].detach()
+        opacities = torch.sigmoid(opacities_group['params'][0].detach())
+        f_dc = f_dc_group['params'][0].detach()
+        f_rest = f_rest_group['params'][0].detach()
+        
+        precon_sum = torch.zeros_like(precon_vectors[0])
+        for i in range(len(precon_vectors)):
+            precon_sum += precon_vectors[i]
+
+        delta_precon_sum = torch.zeros_like(step_vectors[0])
+        for i in range(len(step_vectors)):
+            delta_precon_sum += step_vectors[i] * precon_vectors[i] 
+
+        delta = delta_precon_sum * 1/precon_sum  # this is the final step vector
+
+        P = means3D.size(0)
+        delta = delta.view(P,59)
+        delta = delta.T
+        #print(delta)
+
+        delta = delta.reshape(-1)
+
+        if delta.isnan().any() or torch.all(delta == 0):
+            print('not acceptable delta')
+            del sparse_jacobian.values 
+            del sparse_jacobian.indices
+            # raise Exception('stooooop')
+            sparse_jacobian.raster_settings.clear()
+
+            return
+        
+        max_scale_exp = 2
+
+        def error(delta, alpha):
+            with torch.no_grad():
+                error = 0
+                num_renders = int(linesearch_rendered * num_batches * num_views_per_batch)
+                view_indicies = list(range(num_batches * num_views_per_batch))
+                view_indicies = random.sample(view_indicies, num_renders) # Randomly samples a subset of views to render
+                for view_index in (view_indicies):
+                    offset = 0
+                    new_means3D = torch.clone(means3D_group['params'][0])
+                    new_scales = torch.clone(scales_group['params'][0])
+                    new_rotations = torch.clone(rotations_group['params'][0])
+                    new_opacities = torch.clone(opacities_group['params'][0])
+                    new_f_dc = torch.clone(f_dc_group['params'][0])
+                    new_f_rest = torch.clone(f_rest_group['params'][0])
+
+                    new_params = [new_means3D,new_scales,new_rotations,new_opacities,new_f_dc,new_f_rest]
+
+                    for idx, param in enumerate([means3D,scales,rotations,opacities,f_dc,f_rest]):
+                        numel = param.numel()
+                        new_params[idx] += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+                        offset += numel
+                        # print(new_params[idx])
+
+                    # new_scales = torch.exp(torch.clamp(new_scales, None, max_scale_exp))
+
+                    new_scales = new_scales.clamp(None, max_scale_exp)
+                    new_scales = torch.exp(new_scales)
+                    new_rotations = torch.nn.functional.normalize(new_rotations)
+                    new_opacities = torch.sigmoid(new_opacities)
+
+                    
+                    new_means2D = torch.zeros_like(new_means3D, dtype=new_means3D.dtype, requires_grad=True, device="cuda") + 0
+
+                    # sparse_jacobian.raster_settings[view_index].GN_enabled = False
+                    raster_settings = GaussianRasterizationSettings(
+                        image_height=sparse_jacobian.raster_settings[view_index].image_height,
+                        image_width= sparse_jacobian.raster_settings[view_index].image_width,
+                        tanfovx= sparse_jacobian.raster_settings[view_index].tanfovx,
+                        tanfovy= sparse_jacobian.raster_settings[view_index].tanfovy,
+                        bg= sparse_jacobian.raster_settings[view_index].bg,
+                        scale_modifier= sparse_jacobian.raster_settings[view_index].scale_modifier,
+                        viewmatrix= sparse_jacobian.raster_settings[view_index].viewmatrix,
+                        projmatrix= sparse_jacobian.raster_settings[view_index].projmatrix,
+                        sh_degree= sparse_jacobian.raster_settings[view_index].sh_degree,
+                        campos= sparse_jacobian.raster_settings[view_index].campos,
+                        prefiltered= sparse_jacobian.raster_settings[view_index].prefiltered,
+                        debug= sparse_jacobian.raster_settings[view_index].debug,
+                        antialiasing= sparse_jacobian.raster_settings[view_index].antialiasing,
+                        num_views = 1,
+                        view_index = 0,
+                        GN_enabled = False,
+                        GN_byte_limit = -1,
+                        cache=sparse_jacobian.raster_settings[view_index].cache,
+                        cache_indices=sparse_jacobian.raster_settings[view_index].cache_indices,
+                        cache_offset=sparse_jacobian.raster_settings[view_index].cache_offset,
+                    )
+                    rendered_image, _, _, _ = rasterize_gaussians(new_means3D, new_means2D, new_f_dc, new_f_rest, torch.Tensor([]), new_opacities,new_scales, new_rotations, torch.Tensor([]), raster_settings, None)
+                
+                    rendered_image = rendered_image.clamp(0, 1)
+
+                    # print("E image sum: ", rendered_image.sum())
+                    
+                    loss = (gt_images[view_index] - rendered_image) ** 2
+                    loss = loss.sum()
+                    error += loss.item()
+
+                return error
+
+
+
+        mu_prev = float('inf')
+        alpha = 1.0
+        gamma = 0.7
+
+        tmp_alpha = 1.0
+        lowest_mu = float('inf')
+        while tmp_alpha >= 1e-3:
+            mu = error(delta, tmp_alpha)
+            print('alpha: ', tmp_alpha)
+            print('error: ', mu)  
+            if mu < lowest_mu:
+                alpha = tmp_alpha
+                lowest_mu = mu
+            tmp_alpha *= gamma
+
+          
+        print('final alpha: ', alpha)
+        
+        offset = 0
+        with torch.no_grad():
+            for group in [means3D_group, scales_group, rotations_group, opacities_group, f_dc_group, f_rest_group]:
+                assert len(group["params"]) == 1, "more than one tensor in group"
+                param = group["params"][0]
+                if param.grad is None:
+                    continue
+
+                numel = param.numel()
+                param.data += alpha * delta[offset:offset + numel].view(-1, P).T.view(param.shape)
+
+                if(group['name'] == 'scaling'):
+                    param.data = torch.clamp(param.data, None, max_scale_exp)
+                offset += numel
+
+        self.__clear_iteration
+
+
+    @torch.no_grad()
+    def step_original(self, visibility, view_residuals, view_radii, gaussian_model, iteration, gt_images, achieved_num_views, cache, cache_indices):
 
         print("step")
         
