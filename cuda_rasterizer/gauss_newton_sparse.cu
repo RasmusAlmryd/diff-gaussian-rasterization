@@ -293,9 +293,13 @@ __device__ void computeColorFromSH_device(
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
 	glm::vec3 dL_dRGB = dL_dcolor[0];
-	dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
-	dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
-	dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+	// dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
+	// dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
+	// dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+    dL_dRGB.x *= clamped[0] ? 0 : 1;
+	dL_dRGB.y *= clamped[1] ? 0 : 1;
+	dL_dRGB.z *= clamped[2] ? 0 : 1;
+    
 
 	glm::vec3 dRGBdx(0, 0, 0);
 	glm::vec3 dRGBdy(0, 0, 0);
@@ -586,7 +590,7 @@ __device__ void computeCov2DCUDA_device(int P,
 
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSHForward(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* dc, const float* shs, const bool* clamped)
+__device__ glm::vec3 computeColorFromSHForward(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* dc, const float* shs, bool* clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -634,9 +638,9 @@ __device__ glm::vec3 computeColorFromSHForward(int idx, int deg, int max_coeffs,
 
 	// RGB colors are clamped to positive values. If values are
 	// clamped, we need to keep track of this for the backward pass.
-	// clamped[3 * idx + 0] = (result.x < 0);
-	// clamped[3 * idx + 1] = (result.y < 0);
-	// clamped[3 * idx + 2] = (result.z < 0);
+	clamped[0] = (result.x < 0);
+	clamped[1] = (result.y < 0);
+	clamped[2] = (result.z < 0);
 	return glm::max(result, 0.0f);
 }
 
@@ -757,7 +761,7 @@ __device__ void preprocessCUDA_device(
 	const int* radii,
 	const float* dc,
 	const float* shs,
-	const bool* clamped,
+	bool* clamped,
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
@@ -822,7 +826,7 @@ void precompute_gradient_help_variables(
     const float* means3D,
     const float* dc,
     const float* shs,
-    const bool* clamped,
+    bool* clamped,
     const float* cov3Ds,
     const float* opacities,
     const float* viewmatrix,
@@ -901,7 +905,7 @@ void compute_gradients(
     const int* radii,
     const float* dc,
     const float* shs,
-    const bool* clamped,
+    bool* clamped,
     const float* opacities,
     const float* scales, //const glm::vec3* scales,
     const float* rotations, //const glm::vec4* rotations,
@@ -972,6 +976,8 @@ void compute_gradients(
     float dr_dcov3D[6] = {}; 
 
     *dr_dopacity = G * dr_dalpha_channel;
+
+    
 
 	// if(pix_id == 265901){
 	// 	// printf("d.x, d.y, G: %g, %g, %g, pixel_id: %d, channel: %d: \n", d.x, d.y, G, y, ch);
@@ -1106,6 +1112,8 @@ void applyJr(
     glm::vec3 color;
     float4 con_o;
 
+    bool l_clamped[3] = {};
+
     precompute_gradient_help_variables<C>(
         gaussian_id,
         pix_id,
@@ -1115,7 +1123,7 @@ void applyJr(
         means3D,
         dc,
         shs,
-        clamped,
+        l_clamped,
         cov3Ds,
         opacities,
         viewmatrix_ptr,
@@ -1161,7 +1169,7 @@ void applyJr(
             radii_ptr,
             dc,
             shs,
-            clamped,
+            l_clamped,
             opacities,
             scales, //const glm::vec3* scales,
             rotations, //const glm::vec4* rotations,
@@ -1278,6 +1286,8 @@ void diagJTJ(
     glm::vec3 color;
     float4 con_o;
 
+    bool l_clamped[3] = {};
+
     precompute_gradient_help_variables<C>(
         gaussian_id,
         pix_id,
@@ -1287,7 +1297,7 @@ void diagJTJ(
         means3D,
         dc,
         shs,
-        clamped,
+        l_clamped,
         cov3Ds,
         opacities,
         viewmatrix_ptr,
@@ -1333,7 +1343,7 @@ void diagJTJ(
             radii_ptr,
             dc,
             shs,
-            clamped,
+            l_clamped,
             opacities,
             scales, //const glm::vec3* scales,
             rotations, //const glm::vec4* rotations,
@@ -1445,6 +1455,8 @@ void residual_dot_sum(
     glm::vec3 color;
     float4 con_o;
 
+    bool l_clamped[3] = {};
+
     precompute_gradient_help_variables<C>(
         gaussian_id,
         pix_id,
@@ -1454,7 +1466,7 @@ void residual_dot_sum(
         means3D,
         dc,
         shs,
-        clamped,
+        l_clamped,
         cov3Ds,
         opacities,
         viewmatrix_ptr,
@@ -1500,7 +1512,7 @@ void residual_dot_sum(
             radii_ptr,
             dc,
             shs,
-            clamped,
+            l_clamped,
             opacities,
             scales, //const glm::vec3* scales,
             rotations, //const glm::vec4* rotations,
@@ -1611,6 +1623,8 @@ void sum_residuals(
     glm::vec3 color;
     float4 con_o;
 
+    bool l_clamped[3] = {};
+
     precompute_gradient_help_variables<C>(
         gaussian_id,
         pix_id,
@@ -1620,7 +1634,7 @@ void sum_residuals(
         means3D,
         dc,
         shs,
-        clamped,
+        l_clamped,
         cov3Ds,
         opacities,
         viewmatrix_ptr,
@@ -1666,7 +1680,7 @@ void sum_residuals(
             radii_ptr,
             dc,
             shs,
-            clamped,
+            l_clamped,
             opacities,
             scales, //const glm::vec3* scales,
             rotations, //const glm::vec4* rotations,
@@ -1923,15 +1937,15 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
     printf("b nan?: %d\n", h_bool);
 
-    double h_float;
-    for(int i = 0; i < N; i++){
-        cudaMemcpy(&h_float, &b[i], sizeof(double), cudaMemcpyDeviceToHost);
-        printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
-        if(i % 59 == 11){
-            i = 59 * (i/59) + 58;
-            printf("\n");
-        }
-    }
+    // double h_float;
+    // for(int i = 0; i < N; i++){
+    //     cudaMemcpy(&h_float, &b[i], sizeof(double), cudaMemcpyDeviceToHost);
+    //     printf("b(%d): %g  | %s \n",i, h_float, get_param_name(i%59));
+    //     if(i % 59 == 11){
+    //         i = 59 * (i/59) + 58;
+    //         printf("\n");
+    //     }
+    // }
 
 	double* check_b;
     double h_check_b;

@@ -744,6 +744,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool prefiltered,
 	bool antialiasing)
 {
+	printf("NUM DEGREES %d\n", D);
 	preprocessCUDA<NUM_CHANNELS_3DGS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,

@@ -215,7 +215,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             sparse_J.num_residuals = raster_settings.image_width * raster_settings.image_height
             sparse_J.num_entries += num_residuals
             sparse_J.raster_settings.append(raster_settings)
-            sparse_J.clamped = clamped
+            sparse_J.clamped.append(clamped)
             sparse_J.cov3D = cov3D
 
 
@@ -251,7 +251,7 @@ class SparseJacobianData:
     num_residuals: int
     num_entries: int
     raster_settings: list[GaussianRasterizationSettings]
-    clamped: torch.Tensor
+    clamped: list[torch.Tensor]
     cov3D: torch.Tensor
     conic_o: torch.Tensor
 
@@ -436,11 +436,14 @@ class GaussNewton(Optimizer):
         proj_matrices = []
         campos = []
         num_views = achieved_num_views
+        # print("batch:", batch_index)
         for view_index in range(num_views):
             offset_idx = batch_index * num_views + view_index
+            # print("offset_idx", offset_idx)
             view_matrices.append(sparse_jacobian.raster_settings[offset_idx].viewmatrix)
             proj_matrices.append(sparse_jacobian.raster_settings[offset_idx].projmatrix)
             campos.append( sparse_jacobian.raster_settings[offset_idx].campos)
+
 
         view_matrices = torch.stack(view_matrices, dim=0)
         proj_matrices = torch.stack(proj_matrices, dim=0)
@@ -455,13 +458,15 @@ class GaussNewton(Optimizer):
         width = sparse_jacobian.raster_settings[0].image_width
         height = sparse_jacobian.raster_settings[0].image_height
 
+        clamped = torch.cat(sparse_jacobian.clamped, 0)
+
         _C.gaussNewtonUpdate(
             P, D, max_coeffs, width, height, # max_coeffs = M
             means3D,
             view_radii,
             f_dc,
             f_rest,
-            sparse_jacobian.clamped,
+            clamped,
             opacities,
             scales, 
             rotations,
@@ -487,8 +492,8 @@ class GaussNewton(Optimizer):
             sparse_jacobian.raster_settings[0].debug)
         step_vectors.append(delta)
         precon_vectors.append(preconditioner)
-        print('delta', delta)
-        print('precon', preconditioner)
+        # print('delta', delta)
+        # print('precon', preconditioner)
         self.__clear_batch()
 
     def __clear_batch(self):
@@ -498,13 +503,19 @@ class GaussNewton(Optimizer):
         sparse_jacobian.num_gaussians = 0
         sparse_jacobian.num_residuals = 0
 
+        sparse_jacobian.clamped.clear()
+
     def __clear_iteration(self):
         sparse_jacobian = self.defaults['sparse_jacobian']
+        step_vectors = self.defaults['step_vectors']
+        precon_vectors = self.defaults['precon_vectors']
 
         sparse_jacobian.raster_settings.clear()
+        step_vectors.clear()
+        precon_vectors.clear()
 
     @torch.no_grad()
-    def step(self, num_batches, num_views_per_batch, gt_images, linesearch_rendered = 1.0):
+    def step(self, num_batches, num_views_per_batch, gt_images, linesearch_render_frac = 1.0):
         step_vectors = self.defaults['step_vectors']
         precon_vectors = self.defaults['precon_vectors']
         sparse_jacobian = self.defaults['sparse_jacobian']
@@ -533,12 +544,16 @@ class GaussNewton(Optimizer):
         for i in range(len(step_vectors)):
             delta_precon_sum += step_vectors[i] * precon_vectors[i] 
 
-        delta = delta_precon_sum * 1/precon_sum  # this is the final step vector
+        print(precon_sum)
+        print(delta_precon_sum)
 
+
+        delta = delta_precon_sum * (1/(precon_sum + 1e-8))  # this is the final step vector
+
+        print(delta)
         P = means3D.size(0)
         delta = delta.view(P,59)
         delta = delta.T
-        #print(delta)
 
         delta = delta.reshape(-1)
 
@@ -556,7 +571,7 @@ class GaussNewton(Optimizer):
         def error(delta, alpha):
             with torch.no_grad():
                 error = 0
-                num_renders = int(linesearch_rendered * num_batches * num_views_per_batch)
+                num_renders = int(linesearch_render_frac * num_batches * num_views_per_batch)
                 view_indicies = list(range(num_batches * num_views_per_batch))
                 view_indicies = random.sample(view_indicies, num_renders) # Randomly samples a subset of views to render
                 for view_index in (view_indicies):
@@ -656,7 +671,7 @@ class GaussNewton(Optimizer):
                     param.data = torch.clamp(param.data, None, max_scale_exp)
                 offset += numel
 
-        self.__clear_iteration
+        self.__clear_iteration()
 
 
     @torch.no_grad()
