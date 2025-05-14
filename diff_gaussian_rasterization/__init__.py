@@ -544,13 +544,9 @@ class GaussNewton(Optimizer):
         for i in range(len(step_vectors)):
             delta_precon_sum += step_vectors[i] * precon_vectors[i] 
 
-        print(precon_sum)
-        print(delta_precon_sum)
-
-
         delta = delta_precon_sum * (1/(precon_sum + 1e-8))  # this is the final step vector
 
-        print(delta)
+
         P = means3D.size(0)
         delta = delta.view(P,59)
         delta = delta.T

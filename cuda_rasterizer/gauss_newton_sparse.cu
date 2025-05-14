@@ -1890,16 +1890,16 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMemset(test_bool, 0, sizeof(bool));
     bool h_bool;
 
-    cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test_f<<<(M+255)/256, 256>>>(cache, test_bool, num_cache_entries);
-    cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-    printf("cache nan?: %d\n", h_bool);
+    // cudaMemset(test_bool, 0, sizeof(bool));
+    // isnan_test_f<<<(M+255)/256, 256>>>(cache, test_bool, num_cache_entries);
+    // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+    // printf("cache nan?: %d\n", h_bool);
 
 
-    cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test_f<<<(M+255)/256, 256>>>(residuals, test_bool, M);
-    cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-    printf("residuals nan?: %d\n", h_bool);
+    // cudaMemset(test_bool, 0, sizeof(bool));
+    // isnan_test_f<<<(M+255)/256, 256>>>(residuals, test_bool, M);
+    // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+    // printf("residuals nan?: %d\n", h_bool);
 
     applyJr<NUM_CHANNELS_3DGS><<<(num_cache_entries+255)/256, 256>>>(
         b, 
@@ -1932,10 +1932,10 @@ void GaussNewton::gaussNewtonUpdate(
         antialiasing
     );
 
-    cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test_d<<<(N+255)/256, 256>>>(b, test_bool, N);
-    cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-    printf("b nan?: %d\n", h_bool);
+    // cudaMemset(test_bool, 0, sizeof(bool));
+    // isnan_test_d<<<(N+255)/256, 256>>>(b, test_bool, N);
+    // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+    // printf("b nan?: %d\n", h_bool);
 
     // double h_float;
     // for(int i = 0; i < N; i++){
@@ -1997,10 +1997,10 @@ void GaussNewton::gaussNewtonUpdate(
     //     antialiasing
     // ), debug);
 
-    cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
-    cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-    printf("Ax0 nan?: %d\n", h_bool);
+    // cudaMemset(test_bool, 0, sizeof(bool));
+    // isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
+    // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+    // printf("Ax0 nan?: %d\n", h_bool);
 
 	// r(0) = b - A*x(0)
     double* r;
@@ -2008,10 +2008,10 @@ void GaussNewton::gaussNewtonUpdate(
     cudaMemset(r, 0, N * sizeof(double));
     subtract_d<<<(N+255)/256, 256>>>(b, Ap, r, N);
 
-    cudaMemset(test_bool, 0, sizeof(bool));
-    isnan_test_d<<<(N+255)/256, 256>>>(r, test_bool, N);
-    cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-    printf("r nan?: %d\n", h_bool);
+    // cudaMemset(test_bool, 0, sizeof(bool));
+    // isnan_test_d<<<(N+255)/256, 256>>>(r, test_bool, N);
+    // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+    // printf("r nan?: %d\n", h_bool);
 
 
     // calculate M = diag(J^T * J)
@@ -2119,8 +2119,8 @@ void GaussNewton::gaussNewtonUpdate(
 		// r(k)^T * z(k)
         // dot<<<(N+255)/256, 256>>>(r, z, numerator, N);
         dot_d<<<(N+255)/256, 256>>>(r, z, numerator, N);
-        cudaMemcpy(&test_d, numerator, sizeof(double), cudaMemcpyDeviceToHost);
-        printf("numerator: %g\n", test_d);
+        // cudaMemcpy(&test_d, numerator, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("numerator: %g\n", test_d);
 
 
         
@@ -2164,22 +2164,22 @@ void GaussNewton::gaussNewtonUpdate(
 			antialiasing
 		),debug);
 
-        cudaMemset(test_bool, 0, sizeof(bool));
-        isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
-        cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
-        printf("Ap nan?: %d\n", h_bool);
+        // cudaMemset(test_bool, 0, sizeof(bool));
+        // isnan_test_d<<<(N+255)/256, 256>>>(Ap, test_bool, N);
+        // cudaMemcpy(&h_bool, test_bool, sizeof(bool), cudaMemcpyDeviceToHost);
+        // printf("Ap nan?: %d\n", h_bool);
         
 		// p(k)^T * Ap(k) 
         // dot<<<(N+255)/256, 256>>>(p, Ap, denominator, N);
         dot_d<<<(N+255)/256, 256>>>(p, Ap, denominator, N);
-        cudaMemcpy(&test_d, denominator, sizeof(double), cudaMemcpyDeviceToHost);
-        printf("denominator: %g\n", test_d);
+        // cudaMemcpy(&test_d, denominator, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("denominator: %g\n", test_d);
         
         // alpha = r(k)^T * z(k) / p(k)^T * Ap(k) 
         // scalar_divide<<<1, 1>>>(numerator, denominator, alpha); 
         scalar_divide_d<<<1, 1>>>(numerator, denominator, alpha); 
-        cudaMemcpy(&test_d, alpha, sizeof(double), cudaMemcpyDeviceToHost);
-        printf("alpha: %g\n", test_d);
+        // cudaMemcpy(&test_d, alpha, sizeof(double), cudaMemcpyDeviceToHost);
+        // printf("alpha: %g\n", test_d);
         
         
         // x(k+1) = x + alpha * p
@@ -2204,7 +2204,7 @@ void GaussNewton::gaussNewtonUpdate(
 
 		// Check if R/Rprev > 0.85 or R < eps
         cudaMemcpy(&h_R, R, sizeof(double), cudaMemcpyDeviceToHost);
-        printf("R_prev: %g, R: %g\n", h_R_prev, h_R);
+        // printf("R_prev: %g, R: %g\n", h_R_prev, h_R);
 		printf("R/R_prev: %g \n", (h_R/ h_R_prev));
         if (h_R < eps || h_R/ h_R_prev > 0.85f){
             break;

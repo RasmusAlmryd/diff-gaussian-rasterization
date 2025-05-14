@@ -545,20 +545,20 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 		antialiasing
 	), debug)
 
-	bool any_visible;
-	bool* all_zero;
-	cudaMalloc(&all_zero, sizeof(bool));
-	cudaMemset(all_zero, 1, sizeof(bool));
-	allEqual<<<(P + 255) / 256, 256>>>(P, 0, radii, all_zero);
-	cudaMemcpy(&any_visible, all_zero, sizeof(bool), cudaMemcpyDeviceToHost);
-	any_visible = !any_visible;
+	// bool any_visible;
+	// bool* all_zero;
+	// cudaMalloc(&all_zero, sizeof(bool));
+	// cudaMemset(all_zero, 1, sizeof(bool));
+	// allEqual<<<(P + 255) / 256, 256>>>(P, 0, radii, all_zero);
+	// cudaMemcpy(&any_visible, all_zero, sizeof(bool), cudaMemcpyDeviceToHost);
+	// any_visible = !any_visible;
 	// printf("any_visible: %d\n", any_visible);
 	// if(!any_visible){
 	// 	// return std::make_tuple(num_rendered, num_residuals, bucket_sum);
 	// 	return std::make_tuple(0, 0, 0);
 	// }
 
-	cudaFree(all_zero);
+	// cudaFree(all_zero);
 
 	// store clamped values for use in gauss_newton optimizer
 	CHECK_CUDA(cudaMemcpy(clamped, geomState.clamped, P * 3 * sizeof(bool), cudaMemcpyDeviceToDevice), debug);
@@ -589,7 +589,7 @@ std::tuple<int,int,int> CudaRasterizer::Rasterizer::forward(
 	int num_rendered;
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	printf("forward: num_rendered: %d\n", num_rendered);
+	// printf("forward: num_rendered: %d\n", num_rendered);
 
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);

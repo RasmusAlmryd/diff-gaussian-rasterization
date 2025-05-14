@@ -688,8 +688,7 @@ PerGaussianRenderCUDA_GN(
 	float* __restrict__ dr_dxs,
 	uint64_t* __restrict__ residual_index,
 	const int num_views,
-	const int view_index,
-	uint32_t* acctual_contrib
+	const int view_index
 ) {
 	// global_bucket_idx = warp_idx
 	auto block = cg::this_thread_block();
@@ -896,8 +895,6 @@ PerGaussianRenderCUDA_GN(
 			for (int ch = 0; ch < C; ++ch) {
 				dr_dxs[pixel_offset * 4 + ch + 1] =  ar[ch];
 			}
-
-			atomicAdd(acctual_contrib, 1); //index for sorting by pixel id
 
 			// // dr_dxs[pixel_offset * 5 + 0] = ar[0];
 			// printf("index: %d, pixel offset: %d, global_gaussian_offset: %d, gaussian: %d, ar[0]: %g\n", index, pixel_offset, global_gaussian_offset, splat_idx_global, ar[0]);
@@ -1197,10 +1194,6 @@ void BACKWARD::render(
 	printf("coda gn enabled?: %d", GN_enabled);
 	const int THREADS = 32;
 	if(GN_enabled){
-		uint32_t* acctual_contrib;
-		cudaMalloc(&acctual_contrib, sizeof(uint32_t));
-        cudaMemset(acctual_contrib, 0, sizeof(uint32_t));
-
 
 		PerGaussianRenderCUDA_GN<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
 			ranges,
@@ -1230,15 +1223,9 @@ void BACKWARD::render(
 			dr_dxs,
 			residual_index,
 			num_views,
-			view_index,
-			acctual_contrib
+			view_index
 			);
 
-			uint32_t h_contrib;
-			cudaMemcpy(&h_contrib, acctual_contrib, sizeof(uint32_t), cudaMemcpyDeviceToHost);
-			printf("acctual rendered gaussians: %d \n", h_contrib);
-		
-			cudaFree(acctual_contrib);
 	}else{
 		PerGaussianRenderCUDA_ADAM<NUM_CHANNELS_3DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
 			ranges,
