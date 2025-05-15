@@ -1190,8 +1190,6 @@ void BACKWARD::render(
 	bool GN_enabled
 )
 {
-
-	printf("coda gn enabled?: %d", GN_enabled);
 	const int THREADS = 32;
 	if(GN_enabled){
 

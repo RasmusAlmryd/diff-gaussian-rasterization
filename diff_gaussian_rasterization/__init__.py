@@ -642,15 +642,15 @@ class GaussNewton(Optimizer):
         lowest_mu = float('inf')
         while tmp_alpha >= 1e-3:
             mu = error(delta, tmp_alpha)
-            print('alpha: ', tmp_alpha)
-            print('error: ', mu)  
+            # print('alpha: ', tmp_alpha)
+            # print('error: ', mu)  
             if mu < lowest_mu:
                 alpha = tmp_alpha
                 lowest_mu = mu
             tmp_alpha *= gamma
 
           
-        print('final alpha: ', alpha)
+        # print('final alpha: ', alpha)
         
         offset = 0
         with torch.no_grad():

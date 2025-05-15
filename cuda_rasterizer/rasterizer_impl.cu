@@ -857,10 +857,10 @@ void CudaRasterizer::Rasterizer::backward(
 	bool GN_enabled,
 	bool debug)
 {
-	printf("num duplicate gaussians: %d\n", R);
-	printf("num gaussians: %d\n", P);
-	printf("num residuals: %d \n", K);
-	printf("num views: %d\n", num_views);
+	// printf("num duplicate gaussians: %d\n", R);
+	// printf("num gaussians: %d\n", P);
+	// printf("num residuals: %d \n", K);
+	// printf("num views: %d\n", num_views);
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
